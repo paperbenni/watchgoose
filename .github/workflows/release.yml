@@ -1,0 +1,31 @@
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+      - name: Build Linux binaries
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o dist/watchgoose-linux-amd64 ./cmd/watchgoose
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags '-s -w' -o dist/watchgoose-linux-arm64 ./cmd/watchgoose
+          cd dist
+          sha256sum watchgoose-linux-amd64 > watchgoose-linux-amd64.sha256
+          sha256sum watchgoose-linux-arm64 > watchgoose-linux-arm64.sha256
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/watchgoose-linux-amd64 dist/watchgoose-linux-amd64.sha256 dist/watchgoose-linux-arm64 dist/watchgoose-linux-arm64.sha256 --verify-tag --generate-notes
