@@ -155,6 +155,30 @@ func TestReassuredAtOnAMissingFileIsNeverReassured(t *testing.T) {
 	}
 }
 
+func TestFirstPokeMarkerIsOnlyCreatedOnceAndClearedByPoke(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "last-reassurance")
+	s := New(path)
+	created, err := s.InitializeFirstPoke()
+	if err != nil || !created {
+		t.Fatalf("initialize: created=%v err=%v", created, err)
+	}
+	if _, err := s.ReassuredAt(); !errors.Is(err, ErrAwaitingFirstPoke) {
+		t.Fatalf("initial state error = %v, want ErrAwaitingFirstPoke", err)
+	}
+	when := time.Now().Add(-time.Hour)
+	if err := s.Record(when); err != nil {
+		t.Fatal(err)
+	}
+	created, err = s.InitializeFirstPoke()
+	if err != nil || created {
+		t.Fatalf("reinitialize: created=%v err=%v", created, err)
+	}
+	got, err := s.ReassuredAt()
+	if err != nil || !got.Equal(when) {
+		t.Fatalf("recorded reassurance was replaced: got=%v err=%v", got, err)
+	}
+}
+
 func TestReassuredAtOnAnUnusableFileIsNeverReassured(t *testing.T) {
 	cases := map[string]struct {
 		contents string

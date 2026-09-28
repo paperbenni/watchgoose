@@ -142,6 +142,10 @@ func TestAssess(t *testing.T) {
 			last: time.Now().Format(time.RFC3339Nano), minUptime: time.Hour,
 			wantStale: false, wantFloorClr: false, wantState: "reassured", wantLastIsSet: true,
 		},
+		"fresh install awaits first poke even past uptime floor": {
+			last: "pending", minUptime: time.Nanosecond,
+			wantStale: false, wantFloorClr: false, wantState: "awaiting first reassurance",
+		},
 		"reassured a minute ago": {
 			last: time.Now().Add(-time.Minute).Format(time.RFC3339Nano), minUptime: time.Hour,
 			wantStale: false, wantFloorClr: false, wantState: "reassured", wantLastIsSet: true,
@@ -154,12 +158,12 @@ func TestAssess(t *testing.T) {
 			last: time.Now().Add(-time.Hour).Format(time.RFC3339Nano), minUptime: time.Nanosecond,
 			wantStale: true, wantFloorClr: true, wantState: "armed", wantLastIsSet: true,
 		},
-		"never reassured, and long past the uptime floor": {
+		"missing state after installation, and long past the uptime floor": {
 			last: "missing", minUptime: time.Nanosecond,
 			wantStale: true, wantFloorClr: true, wantState: "armed",
 		},
-		"never reassured, and the machine has just booted": {
-			// The state of a machine that has been installed and not yet poked.
+		"missing state after installation, and the machine has just booted": {
+			// A lost state file is not the fresh-install marker.
 			last: "missing", minUptime: 100 * 365 * 24 * time.Hour,
 			wantStale: true, wantFloorClr: false, wantState: "stale, uptime floor holding",
 		},
@@ -173,6 +177,10 @@ func TestAssess(t *testing.T) {
 			d, cfg := testDaemon(t)
 			d.cfg.Guard.MinUptime = tc.minUptime
 			switch tc.last {
+			case "pending":
+				if _, err := d.state.InitializeFirstPoke(); err != nil {
+					t.Fatalf("initialize: %v", err)
+				}
 			case "missing":
 			case "corrupt":
 				if err := os.WriteFile(cfg.Server.StateFile, []byte("not a timestamp\n"), 0o600); err != nil {
@@ -200,6 +208,9 @@ func TestAssess(t *testing.T) {
 			if tc.last == "missing" && a.stateProblem == "" {
 				t.Error("a missing state file was not reported as a problem worth logging")
 			}
+			if tc.last == "pending" && !a.awaitingFirstPoke {
+				t.Error("fresh installation did not wait for its first poke")
+			}
 			if tc.last == "corrupt" && a.stateProblem == "" {
 				t.Error("a corrupt state file was not reported as a problem worth logging")
 			}
@@ -212,9 +223,18 @@ func TestAssess(t *testing.T) {
 // irreversible act.
 func TestCheckpointStandsDownAfterAPoke(t *testing.T) {
 	d, cfg := testDaemon(t)
+	if _, err := d.state.InitializeFirstPoke(); err != nil {
+		t.Fatal(err)
+	}
+	if d.checkpoint("repair") {
+		t.Fatal("repair began before the first poke")
+	}
 
+	if err := os.Remove(cfg.Server.StateFile); err != nil {
+		t.Fatal(err)
+	}
 	if !d.checkpoint("repair") {
-		t.Fatal("the checkpoint stood down with no state file at all; a machine that has never been reassured is stale")
+		t.Fatal("a missing state file disarmed an installed switch")
 	}
 
 	if err := d.state.Record(time.Now()); err != nil {

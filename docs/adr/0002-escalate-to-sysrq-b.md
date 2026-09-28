@@ -19,7 +19,7 @@ unreachable indefinitely.
 The escalation child must survive the daemon's systemd unit stopping during
 reboot. Its own session does not escape the unit cgroup. The unit therefore uses
 `KillMode=process`: systemd stops the main daemon, while the child ignores
-SIGTERM and remains alive until it acts, sees fresh reassurance, or reaches its
+SIGTERM and remains alive until it acts or reaches its
 bounded lifetime. `ExecStopPost` cancels waiting children after an explicit
 service stop, while preserving them when systemd is shutting down or the
 daemon failed unexpectedly. Uninstall also

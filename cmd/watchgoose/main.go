@@ -19,7 +19,7 @@
 //	    -> systemctl reboot
 //	    -> the kernel reboot via sysrq-b, by that child, if nothing else did
 //
-// A reassurance arriving at any point stands the whole thing down.
+// Before the reboot ladder starts, a reassurance stands the sequence down.
 package main
 
 import (
@@ -83,14 +83,13 @@ func run() int {
 	var (
 		configPath     = flag.String("config", defaultConfigPath, "path to the configuration file")
 		check          = flag.Bool("check", false, "validate the configuration, print the resolved configuration to stdout and exit; touches neither the network, the state file nor the log")
+		initialize     = flag.Bool("initialize-first-poke", false, "internal: mark a new installation as waiting for its first reassurance")
 		cancelChildren = flag.Bool("cancel-escalation-children", false, "internal: cancel this binary's waiting escalation children")
 		cancelOnStop   = flag.Bool("cancel-escalation-children-unless-shutdown", false, "internal: cancel escalation children on an explicit service stop")
 		// The flags below are the escalation child's private handshake with its
 		// parent, not part of the configuration surface. See internal/reboot.
 		escalate       = flag.Bool(reboot.EscalateFlag, false, "internal: become the escalation child")
 		escalateGrace  = flag.Duration(reboot.EscalateGracefulArg, 0, "internal: graceful timeout to wait out")
-		escalateDead   = flag.Duration(reboot.EscalateDeadlineArg, 0, "internal: reassurance deadline to honour before escalating")
-		escalateState  = flag.String(reboot.EscalateStateArg, "", "internal: reassurance state file")
 		escalateLogArg = flag.String(reboot.EscalateLogArg, "", "internal: audit log to write to")
 	)
 	flag.Usage = func() {
@@ -133,8 +132,6 @@ func run() int {
 	if *escalate {
 		spec := reboot.EscalationSpec{
 			GracefulTimeout: *escalateGrace,
-			Deadline:        *escalateDead,
-			StateFile:       *escalateState,
 			LogFile:         *escalateLogArg,
 		}
 		logger, logFile, err := openLog(spec.LogFile, false)
@@ -160,6 +157,27 @@ func run() int {
 	}
 	if *check {
 		return checkConfig(cfg, *configPath)
+	}
+	if *initialize {
+		if os.Geteuid() != 0 {
+			fmt.Fprintln(os.Stderr, "watchgoose: initializing the first poke requires root")
+			return 1
+		}
+		if err := os.MkdirAll(filepath.Dir(cfg.Server.StateFile), stateDirMode); err != nil {
+			fmt.Fprintf(os.Stderr, "watchgoose: create state directory: %v\n", err)
+			return 1
+		}
+		created, err := state.New(cfg.Server.StateFile).InitializeFirstPoke()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "watchgoose: initialize first poke: %v\n", err)
+			return 1
+		}
+		if created {
+			fmt.Printf("waiting for first reassurance: %s\n", cfg.Server.StateFile)
+		} else {
+			fmt.Printf("preserved existing reassurance state: %s\n", cfg.Server.StateFile)
+		}
+		return 0
 	}
 
 	// Repair writes to other people's accounts, the forceful rung writes to
@@ -281,12 +299,15 @@ type assessment struct {
 	// only thing that has to be true for the switch to act.
 	floorClear bool
 	// stateProblem describes a missing or unusable state file, for the log.
-	stateProblem string
+	stateProblem      string
+	awaitingFirstPoke bool
 }
 
 // switchState is the one-word summary of the assessment, for /health.
 func (a assessment) switchState() string {
 	switch {
+	case a.awaitingFirstPoke:
+		return "awaiting first reassurance"
 	case !a.stale:
 		return "reassured"
 	case !a.floorClear:
@@ -304,9 +325,12 @@ func (d *daemon) assess(now time.Time) assessment {
 
 	last, err := d.state.ReassuredAt()
 	switch {
+	case errors.Is(err, state.ErrAwaitingFirstPoke):
+		a.awaitingFirstPoke = true
+		return a
 	case errors.Is(err, state.ErrNotReassured):
-		// The same state as a lost state file, and the same consequence: never
-		// reassured, so the switch is armed. poll() says so in the log.
+		// Installation writes an explicit waiting marker. A missing file now
+		// means that marker or a recorded reassurance has been lost.
 		a.stateProblem = "no reassurance has ever been recorded"
 	case err != nil:
 		// Fail-safe. An unreadable or malformed state file must not disarm the
@@ -381,10 +405,9 @@ func (d *daemon) poll(ctx context.Context) {
 	d.escalate(ctx)
 }
 
-// escalate is the switch firing, in order. Every irreversible step is preceded
-// by a re-read of the reassurance deadline, so a poke that arrives partway
-// through stands the whole sequence down. That is how a person stops the loop,
-// and it is a feature rather than an edge case.
+// escalate is the switch firing, in order. It re-reads the reassurance
+// deadline before repair, settling and spawning the reboot child. Once that
+// child is spawned, the reboot ladder is committed.
 func (d *daemon) escalate(ctx context.Context) {
 	// (a) Repair: what a human would have done by hand, before any reboot.
 	if !d.checkpoint("repair") {
@@ -422,8 +445,6 @@ func (d *daemon) engageReboot(ctx context.Context,
 	}
 	spec := reboot.EscalationSpec{
 		GracefulTimeout: d.cfg.Reboot.GracefulTimeout,
-		Deadline:        d.cfg.Reassurance.Deadline,
-		StateFile:       d.state.Path(),
 		LogFile:         d.cfg.Log.File,
 	}
 	pid, err := spawn(spec, d.log)
@@ -443,11 +464,6 @@ func (d *daemon) engageReboot(ctx context.Context,
 
 	// (d) Rung one: the graceful reboot. It is launched and not waited for,
 	// because PID 1 may be exactly why the switch is firing.
-	if !d.checkpoint("the graceful reboot") {
-		d.log.Info("reassured after the escalation child was spawned; it will stand down too when it wakes",
-			"escalation_child", child)
-		return
-	}
 	d.log.Warn("rung 1 of 2: asking systemd to reboot the machine", "rung", "systemctl reboot")
 	gracefulErr := graceful(ctx)
 	if gracefulErr != nil {
@@ -484,6 +500,10 @@ func (d *daemon) engageReboot(ctx context.Context,
 // irreversible step. If reassurance has arrived, the sequence is abandoned.
 func (d *daemon) checkpoint(stage string) bool {
 	last, err := d.state.ReassuredAt()
+	if errors.Is(err, state.ErrAwaitingFirstPoke) {
+		d.log.Info("waiting for the first reassurance; standing down", "stage", stage)
+		return false
+	}
 	if err != nil && !errors.Is(err, state.ErrNotReassured) {
 		// Unreadable or malformed is not reassurance. Carry on, loudly.
 		d.log.Warn("could not read the reassurance state before an irreversible step; continuing",
@@ -537,14 +557,17 @@ func (d *daemon) logReport(r repair.Report) {
 // warnIfNeverReassured says the loudest thing it can at the one moment a
 // human is most likely to read the journal.
 func (d *daemon) warnIfNeverReassured() {
-	if _, err := d.state.ReassuredAt(); !errors.Is(err, state.ErrNotReassured) {
+	_, err := d.state.ReassuredAt()
+	if errors.Is(err, state.ErrAwaitingFirstPoke) {
+		d.log.Info("waiting for the first reassurance before enabling repair and reboot",
+			"state_file", d.state.Path(), "reassurance_path", d.cfg.Reassurance.Path)
+		return
+	}
+	if !errors.Is(err, state.ErrNotReassured) {
 		return
 	}
 	d.log.Warn("THERE IS NO REASSURANCE STATE FILE YET: "+d.state.Path()+" does not exist. "+
-		"The machine therefore considers itself UNREASSURED, and the switch is armed. "+
-		"This is expected for the first boot after installation, and the only thing that clears it is "+
-		"the client POSTing to the reassurance path. Have the client poke this machine once, immediately, "+
-		"before you walk away from the install.",
+		"The installation marker or an earlier reassurance was lost; treating the machine as unreassured.",
 		"state_file", d.state.Path(),
 		"reassurance_path", d.cfg.Reassurance.Path,
 		"deadline", d.cfg.Reassurance.Deadline,

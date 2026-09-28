@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"watchgoose/internal/state"
 )
 
 // ADR 0002 is a promise about the shape of this package, so it is tested
@@ -102,7 +100,7 @@ func TestTheForcefulRungIsAHardcodedByte(t *testing.T) {
 // would reboot immediately.
 func TestSpawnEscalationChildRefusesANonPositiveTimeout(t *testing.T) {
 	for _, timeout := range []time.Duration{0, -time.Minute} {
-		spec := EscalationSpec{GracefulTimeout: timeout, Deadline: time.Minute, StateFile: "/nonexistent", LogFile: "/nonexistent"}
+		spec := EscalationSpec{GracefulTimeout: timeout, LogFile: "/nonexistent"}
 		pid, err := SpawnEscalationChild(spec, nil)
 		if err == nil {
 			t.Errorf("SpawnEscalationChild with a timeout of %s returned pid %d and no error", timeout, pid)
@@ -110,60 +108,6 @@ func TestSpawnEscalationChildRefusesANonPositiveTimeout(t *testing.T) {
 		if pid != 0 {
 			t.Errorf("SpawnEscalationChild with a timeout of %s returned pid %d, want 0", timeout, pid)
 		}
-	}
-}
-
-// The escalation child is what honours a poke that arrives while the graceful
-// rung is in flight, so its idea of staleness has to match the parent's.
-func TestUnreassured(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "last-reassurance")
-	spec := EscalationSpec{Deadline: 20 * time.Minute, StateFile: path}
-
-	// No state file at all: never reassured, so escalate.
-	got, err := unreassured(spec)
-	if err != nil {
-		t.Fatalf("unreassured with no state file: %v", err)
-	}
-	if !got {
-		t.Error("a machine with no state file was treated as reassured")
-	}
-
-	// A fresh reassurance: stand down. This is the poke stopping the loop.
-	if err := state.New(path).Record(time.Now()); err != nil {
-		t.Fatalf("Record: %v", err)
-	}
-	got, err = unreassured(spec)
-	if err != nil {
-		t.Fatalf("unreassured after reassurance: %v", err)
-	}
-	if got {
-		t.Error("a machine that has just been reassured was treated as unreassured")
-	}
-
-	// An old one: escalate again.
-	if err := state.New(path).Record(time.Now().Add(-24 * time.Hour)); err != nil {
-		t.Fatalf("Record: %v", err)
-	}
-	got, err = unreassured(spec)
-	if err != nil {
-		t.Fatalf("unreassured after a stale reassurance: %v", err)
-	}
-	if !got {
-		t.Error("a machine that has not been reassured for a day was treated as reassured")
-	}
-
-	// A corrupt state file is a warning, and the answer is still yes: a lost
-	// state file must not disarm the switch.
-	if err := os.WriteFile(path, []byte("nonsense\n"), 0o600); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	got, err = unreassured(spec)
-	if err == nil {
-		t.Error("a corrupt state file was read without complaint")
-	}
-	if !got {
-		t.Error("a corrupt state file was treated as reassurance")
 	}
 }
 

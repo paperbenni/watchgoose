@@ -1,9 +1,9 @@
-// Package state holds the one piece of state the switch persists: the local
-// time at which reassurance last arrived.
+// Package state holds the local time at which reassurance last arrived. Before
+// the first poke, it holds an explicit waiting marker written at installation.
 //
 // It is on disk rather than in memory so that a crash and a respawn cannot be
-// mistaken for silence (see docs/adr/0005-single-daemon.md). Nothing else is
-// persisted. There is no latch, no counter and no budget: a switch that
+// mistaken for silence (see docs/adr/0005-single-daemon.md). There is no
+// post-reboot latch, counter or budget: a switch that
 // re-arms on every boot needs no state of its own
 // (see docs/adr/0001-accept-unattended-reboot-loops.md).
 package state
@@ -19,6 +19,10 @@ import (
 )
 
 const (
+	// AwaitingFirstPoke is written only during installation. A missing file
+	// remains a failure after installation, rather than silently disarming an
+	// already active switch.
+	AwaitingFirstPoke = "awaiting-first-reassurance"
 	// fileMode is the mode the state file is created with. It is root's
 	// business only; the client reaches the switch over HTTP and never reads
 	// this file.
@@ -28,13 +32,12 @@ const (
 	Layout = time.RFC3339Nano
 )
 
-// The three ways there can be no reassurance to report. Callers distinguish
-// them because they mean different things: not-yet-installed is expected at
-// first boot, whereas unreadable and malformed both mean the machine may have
-// lost its state and must be treated as having never been reassured.
+// Callers distinguish the explicit first-poke marker from missing, unreadable
+// or malformed state. Only the explicit marker holds repair and reboot.
 var (
 	// ErrNotReassured means there is no state file at all.
-	ErrNotReassured = errors.New("no reassurance recorded yet")
+	ErrNotReassured      = errors.New("no reassurance recorded yet")
+	ErrAwaitingFirstPoke = errors.New("waiting for the first reassurance")
 	// ErrUnreadable means there is a state file that cannot be read.
 	ErrUnreadable = errors.New("state file is unreadable")
 	// ErrMalformed means the state file does not contain a timestamp.
@@ -58,7 +61,8 @@ func (s *Store) Path() string { return s.path }
 // ReassuredAt returns the time of the last reassurance.
 //
 // A missing, unreadable or malformed state file is reported as the zero time
-// together with a non-nil error, and callers must treat that as stale. This
+// together with a non-nil error, and callers must treat that as stale. The
+// explicit first-poke marker returns ErrAwaitingFirstPoke instead. This
 // is fail-safe and deliberate: a lost state file must never disarm the switch
 // (see docs/adr/0001-accept-unattended-reboot-loops.md). The error is
 // returned as well as the zero time only so that it can be logged distinctly
@@ -71,11 +75,38 @@ func (s *Store) ReassuredAt() (time.Time, error) {
 	if err != nil {
 		return time.Time{}, fmt.Errorf("%w: %s: %w", ErrUnreadable, s.path, err)
 	}
+	if strings.TrimSpace(string(raw)) == AwaitingFirstPoke {
+		return time.Time{}, fmt.Errorf("%w: %s", ErrAwaitingFirstPoke, s.path)
+	}
 	stamp, perr := time.Parse(Layout, strings.TrimSpace(string(raw)))
 	if perr != nil {
 		return time.Time{}, fmt.Errorf("%w: %s: %w", ErrMalformed, s.path, perr)
 	}
 	return stamp, nil
+}
+
+// InitializeFirstPoke marks a new installation as waiting for its first poke.
+// O_EXCL preserves any recorded reassurance or damaged state on reinstall.
+func (s *Store) InitializeFirstPoke() (bool, error) {
+	f, err := os.OpenFile(s.path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode)
+	if errors.Is(err, fs.ErrExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("initialize reassurance state: %w", err)
+	}
+	if _, err := f.WriteString(AwaitingFirstPoke + "\n"); err != nil {
+		f.Close()
+		return false, fmt.Errorf("write initial reassurance state: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return false, fmt.Errorf("sync initial reassurance state: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return false, fmt.Errorf("close initial reassurance state: %w", err)
+	}
+	return true, nil
 }
 
 // Record writes t as the time of the last reassurance.

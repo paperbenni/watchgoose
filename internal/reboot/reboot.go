@@ -25,8 +25,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"watchgoose/internal/state"
 )
 
 const (
@@ -39,8 +37,6 @@ const (
 	// the flag package refuses; the parent adds one when it builds argv.
 	EscalateFlag        = "escalate-child"
 	EscalateGracefulArg = "escalate-child-graceful"
-	EscalateDeadlineArg = "escalate-child-deadline"
-	EscalateStateArg    = "escalate-child-state"
 	EscalateLogArg      = "escalate-child-log"
 
 	// childHardBound caps the escalation child's whole life. The child exists
@@ -58,11 +54,6 @@ type EscalationSpec struct {
 	// GracefulTimeout is how long to let the graceful rung have before taking
 	// the forceful one.
 	GracefulTimeout time.Duration
-	// Deadline is the reassurance deadline, needed by the child to honour a
-	// reassurance that arrives while the graceful rung is in flight.
-	Deadline time.Duration
-	// StateFile is where the reassurance timestamp lives.
-	StateFile string
 	// LogFile is the audit trail the child writes its own few lines to.
 	LogFile string
 }
@@ -137,10 +128,6 @@ func GracefulReboot(ctx context.Context) error {
 // session does not leave its systemd cgroup. Once started, the child ignores
 // SIGTERM and SIGHUP.
 //
-// The child is told the reassurance deadline as well, so that a reassurance
-// arriving during the graceful rung stops the ladder at the last rung too.
-// The poke that stops the loop has to work everywhere, not only between steps.
-//
 // There is a window of a few microseconds between this fork and the child
 // installing its own signal handlers in which a SIGTERM could reach it and
 // take it out. Go offers no way to block signals across exec, and closing
@@ -160,8 +147,6 @@ func SpawnEscalationChild(spec EscalationSpec, log *slog.Logger) (int, error) {
 	cmd := exec.Command(exe,
 		"-"+EscalateFlag,
 		"-"+EscalateGracefulArg, spec.GracefulTimeout.String(),
-		"-"+EscalateDeadlineArg, spec.Deadline.String(),
-		"-"+EscalateStateArg, spec.StateFile,
 		"-"+EscalateLogArg, spec.LogFile,
 	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -187,15 +172,13 @@ func SpawnEscalationChild(spec EscalationSpec, log *slog.Logger) (int, error) {
 			"rung", forcefulRungName,
 			"child_pid", pid,
 			"graceful_timeout", spec.GracefulTimeout,
-			"child_hard_bound", spec.GracefulTimeout+childHardBound,
-			"state_file", spec.StateFile)
+			"child_hard_bound", spec.GracefulTimeout+childHardBound)
 	}
 	return pid, nil
 }
 
 // RunEscalationChild is the body of the escalation child: sleep out the
-// graceful rung, re-read the reassurance deadline, and only then take the
-// forceful rung. It returns the process exit code.
+// graceful rung and then take the forceful rung. It returns the process exit code.
 func RunEscalationChild(spec EscalationSpec, log *slog.Logger) int {
 	// First statement, before anything can block or fail: the child must be
 	// deaf to the two signals systemd uses to stop this process.
@@ -209,7 +192,6 @@ func RunEscalationChild(spec EscalationSpec, log *slog.Logger) int {
 		"child_pid", os.Getpid(),
 		"graceful_timeout", spec.GracefulTimeout,
 		"child_hard_bound", spec.GracefulTimeout + childHardBound,
-		"state_file", spec.StateFile,
 	}
 	// A copy, so that adding a field to one log line can never disturb
 	// another.
@@ -230,20 +212,6 @@ func RunEscalationChild(spec EscalationSpec, log *slog.Logger) int {
 		return 1
 	}
 
-	// The last chance to honour a poke. The parent re-reads the deadline
-	// before every irreversible step, but between spawning this child and the
-	// trigger there is a window in which reassurance can arrive, and taking
-	// the forceful rung on a machine that has just been reassured would be
-	// the switch ignoring the only input it has.
-	stale, err := unreassured(spec)
-	if err != nil {
-		// Fail loud, act anyway: a lost state file must not disarm the switch.
-		log.Warn("escalation child: could not read the reassurance state file, escalating anyway", with("error", err)...)
-	} else if !stale {
-		log.Info("reassured, standing down: escalation child will not take the forceful rung", fields...)
-		return 0
-	}
-
 	// The kernel permits privileged writes to /proc/sysrq-trigger regardless
 	// of /proc/sys/kernel/sysrq, which controls keyboard invocation only.
 	// SysRq-b is an immediate reboot with no filesystem sync.
@@ -253,20 +221,6 @@ func RunEscalationChild(spec EscalationSpec, log *slog.Logger) int {
 		return 1
 	}
 	return 0
-}
-
-// unreassured re-reads the reassurance state file and reports whether the
-// machine is still silent.
-func unreassured(spec EscalationSpec) (bool, error) {
-	last, err := state.New(spec.StateFile).ReassuredAt()
-	if err != nil {
-		if errors.Is(err, state.ErrNotReassured) {
-			// No state file is stale, not an error worth hesitating over.
-			return true, nil
-		}
-		return true, err
-	}
-	return state.Stale(last, time.Now(), spec.Deadline), nil
 }
 
 // forcefulRungName is how the forceful rung is named in every log line.

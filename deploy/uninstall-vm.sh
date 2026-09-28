@@ -201,10 +201,9 @@ else
     fi
     if [ -d "${VAR_DIR}" ]; then
         info "KEPT    ${VAR_DIR}"
-        info "        The last-reassurance timestamp and the log. The timestamp is"
-        info "        evidence of when the machine last heard from outside; it is"
-        info "        also what a fresh install reads, so keeping it avoids a"
-        info "        machine briefly believing it has gone silent."
+        info "        The reassurance state and log. State is either the first-poke"
+        info "        marker or the timestamp of the last successful poke. Keeping it"
+        info "        preserves the switch's place in the setup or deadline cycle."
         info "        To remove it: PURGE=1 ${0}"
     fi
     if [ -d "${PREFIX}" ]; then

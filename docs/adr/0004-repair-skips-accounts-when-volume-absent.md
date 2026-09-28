@@ -1,7 +1,7 @@
 # Repair skips the ordinary accounts when the volume is absent
 
-The repair step always fixes the [recovery user](../CONTEXT.md), and repairs `benjamin` and
-`ubuntu` only when the [volume](../CONTEXT.md) is actually mounted. When it is not, those
+The repair step always fixes the [recovery user](../CONTEXT.md), and repairs configured
+ordinary accounts only when the [volume](../CONTEXT.md) is actually mounted. When it is not, those
 writes are silently ineffective: `/home` is an empty directory on the root disk, so anything
 written there is shadowed the moment the volume mounts on a later boot.
 

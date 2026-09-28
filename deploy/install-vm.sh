@@ -5,15 +5,11 @@
 # Idempotent. Safe to re-run: a second run replaces the binary and the unit,
 # leaves an existing configuration alone, and changes nothing else.
 #
-#   deploy/install-vm.sh                  normal install
-#   FORCE=1 deploy/install-vm.sh          overwrite /etc/watchgoose.yaml (the old
-#                                         one is backed up first)
+#   deploy/install-vm.sh                  install or update, preserving config
 #
 # Deliberately NOT done here:
-#   * the recovery user is created by the DAEMON, at repair time, and by nothing
-#     else. This script prints a recipe for creating it eagerly and does not run
-#     it. A human who wants the account now should run the recipe, rather than
-#     have an installer quietly provision a root-adjacent account.
+#   * the recovery user is created by the DAEMON only when repair runs. The
+#     installer does not provision a standing passwordless-sudo account.
 #   * the simplevm metadata timers are left exactly as they are. homes-sync.timer
 #     has a known lockout bug and the switch deliberately self-heals around it
 #     rather than switching it off (docs/adr/0003).
@@ -186,24 +182,8 @@ ok "installed ${BIN_DST} ($(stat -c %s "${BIN_DST}") bytes, $(stat -c %A "${BIN_
 # 3. Config ------------------------------------------------------------------
 say "Config"
 if [ -e "${CONFIG_PATH}" ]; then
-    case "${FORCE:-0}" in
-        1|y|Y|yes|YES|true|TRUE)
-            BACKUP="${CONFIG_PATH}.$(date +%Y%m%d-%H%M%S).bak"
-            install -m 0600 -o root -g root "${CONFIG_PATH}" "${BACKUP}"
-            info "FORCE set: the existing config was backed up to ${BACKUP}"
-            install -m 0644 -o root -g root "${EXAMPLE_CONFIG}" "${CONFIG_PATH}"
-            changed "config       ${CONFIG_PATH}  (REPLACED from the example; backup at ${BACKUP})"
-            warn "the previous config is no longer the one in use. If you had added"
-            warn "your own public keys under repair.authorized_keys, put them back"
-            warn "now, or restore the backup: cp ${BACKUP} ${CONFIG_PATH}"
-            ;;
-        *)
-            info "PRESERVED the existing ${CONFIG_PATH}; it has not been touched."
-            info "It may contain public keys you added by hand, and overwriting it"
-            info "silently would arm this machine with the wrong set of keys."
-            info "To replace it anyway: FORCE=1 ${0}"
-            ;;
-    esac
+    info "PRESERVED the existing ${CONFIG_PATH}; it has not been touched."
+    info "Edit it directly to change the machine address, accounts or keys."
 else
     install -m 0644 -o root -g root "${EXAMPLE_CONFIG}" "${CONFIG_PATH}"
     changed "config       ${CONFIG_PATH}  (created from the example)"
@@ -215,9 +195,17 @@ fi
 say "Validating the installed config before starting the service"
 if ! CHECK_OUTPUT="$("${BIN_DST}" -config "${CONFIG_PATH}" -check 2>&1)"; then
     printf '%s\n' "${CHECK_OUTPUT}" | sed 's/^/      /'
-    die "the daemon rejected ${CONFIG_PATH}; service was not started"
+    die "edit ${CONFIG_PATH} with this VM's listen address and your public key, then rerun the install; service was not started"
 fi
 ok "the daemon accepts ${CONFIG_PATH}"
+
+# A fresh install waits for a real poke before it can repair or reboot. Do not
+# recreate the marker on an existing installation whose state file was lost:
+# that machine has already been armed and must continue to fail safe.
+if [ ! -e "${UNIT_PATH}" ] && [ "$(systemctl show --property=LoadState --value "${SERVICE_NAME}" 2>/dev/null)" = "not-found" ]; then
+    say "Initializing first-poke state"
+    "${BIN_DST}" -config "${CONFIG_PATH}" -initialize-first-poke
+fi
 
 # 4. Unit and service --------------------------------------------------------
 say "systemd unit"
@@ -284,7 +272,7 @@ LOG_FILE="$(config_value log log_file "${CONFIG_PATH}" || true)"
 STATE_FILE="$(config_value server state_file "${CONFIG_PATH}" || true)"
 
 # Fall back to the built-in defaults, which are also in internal/config.
-LISTEN="${LISTEN:-100.76.187.120:9099}"
+LISTEN="${LISTEN:-127.0.0.1:9099}"
 PATH_ROUTE="${PATH_ROUTE:-/reassure}"
 RECOVERY_USER="${RECOVERY_USER:-recovery}"
 RECOVERY_HOME="${RECOVERY_HOME:-/srv/recovery}"
@@ -328,46 +316,8 @@ info "An empty 2xx is the expected result. No response means the daemon is not"
 info "listening on ${LISTEN}: check 'systemctl status ${SERVICE_NAME}' and the log."
 
 say "The recovery user"
-if id "${RECOVERY_USER}" >/dev/null 2>&1; then
-    info "'${RECOVERY_USER}' already exists on this machine (home ${RECOVERY_HOME})."
-    info "watchgoose will keep it in that state, so nothing more to do."
-    info "It will NOT create it again, and the first fire will not fail because"
-    info "of that. Check the recipe below if you want to confirm its keys and sudo"
-    info "grant match repair.authorized_keys in ${CONFIG_PATH}."
-else
-    info "It does not exist yet, and this script has not created it."
-fi
-cat <<RECOVERY_NOTE
-    watchgoose creates the recovery user itself, at repair time, and not before.
-    Until the switch first fires there is NO escape hatch on this machine beyond
-    the ordinary accounts — and a fire is exactly the moment you will not want to
-    be creating one.
-
-    To create it eagerly instead, so that it exists before it is needed, run this
-    yourself as root. It is the same account, in the same place, with the same
-    sudo grant that the daemon will write for itself. Skip it if the account
-    already exists; it is idempotent only in the sense that the daemon will
-    overwrite this work later, not that it is safe to run twice.
-
-      useradd --create-home --home-dir ${RECOVERY_HOME} --shell /bin/bash ${RECOVERY_USER}
-      install -d -m 0700 -o ${RECOVERY_USER} -g ${RECOVERY_USER} ${RECOVERY_HOME}/.ssh
-      install -m 0600 /dev/null ${RECOVERY_HOME}/.ssh/authorized_keys
-      ${EDITOR:-vi} ${RECOVERY_HOME}/.ssh/authorized_keys
-      printf '%s ALL=(ALL) NOPASSWD:ALL\\n' ${RECOVERY_USER} > /etc/sudoers.d/90-${RECOVERY_USER}
-      chmod 0440 /etc/sudoers.d/90-${RECOVERY_USER}
-      visudo -cf /etc/sudoers.d/90-${RECOVERY_USER}
-
-    Then append the public keys listed under repair.authorized_keys in
-    ${CONFIG_PATH} to that authorized_keys file.
-
-    ${RECOVERY_HOME} is on the root disk, deliberately outside the volume. That
-    is what makes the account survive a volume failure, and what keeps it immune
-    to the simplevm deactivate_homes.sh lockout, which only keys on homes under
-    /home (ADR 0003). watchgoose will then keep the account in exactly this
-    state; creating it early just means it exists before it is first needed.
-
-    This script prints that recipe and does not run it. It will not.
-RECOVERY_NOTE
+info "The installer does not create ${RECOVERY_USER}. Repair creates it only when"
+info "the switch fires, at ${RECOVERY_HOME}, with the configured keys and sudo grant."
 
 say "Then install the client somewhere else"
 info "NOT on this machine: a client that stops poking when the machine it"
@@ -377,7 +327,7 @@ info ""
 info "  just test-client HOST url [interval] [timeout] [arch]"
 info ""
 info "for example — note the path, the client POSTs to exactly what it is given:"
-info "  just test-client user@raspberrypi ${CURL_TARGET}${PATH_ROUTE} 5m 15s arm64"
+info "  just test-client user@client-host ${CURL_TARGET}${PATH_ROUTE} 5m 15s arm64"
 info ""
 info "That builds goosepoke, copies it over SSH, renders deploy/goosepoke.service with the"
 info "URL filled in, installs it and starts the service there."

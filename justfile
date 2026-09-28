@@ -110,10 +110,9 @@ check-config:
 test-vm: watchgoose
     deploy/install-vm.sh
     @printf '\n'
-    @printf 'Send a reassurance poke NOW, by hand, before you do anything else.\n'
-    @printf 'A machine with no reassurance on record believes it is unreached, and\n'
-    @printf 'once it is past the uptime floor (guard.min_uptime) it will repair and\n'
-    @printf 'reboot, and go on doing so roughly every half hour (ADR 0001). The exact\n'
+    @printf 'Send a reassurance poke from another machine to activate this fresh install.\n'
+    @printf 'Until the first successful poke, repair and reboot are held. Afterward,\n'
+    @printf 'the normal deadline and uptime floor apply across service and VM restarts. The exact\n'
     @printf 'command was printed above and is in the install summary; the log is at\n'
     @printf '  %s\n' "{{WATCHGOOSE_PREFIX}}/var/watchgoose.log"
 
@@ -135,7 +134,7 @@ uninstall-vm:
 
 # Confirm HOST was given. Without it, this does nothing at all, on purpose.
 _require_host HOST:
-    @if [ -z "{{HOST}}" ]; then printf 'test-client: usage: just test-client HOST url [interval] [timeout] [arch]\n  e.g. just test-client user@raspberrypi http://100.76.187.120:9099/reassure 5m 15s arm64\n' >&2; exit 2; fi
+    @if [ -z "{{HOST}}" ]; then printf 'test-client: usage: just test-client HOST url [interval] [timeout] [arch]\n  e.g. just test-client user@client-host http://VM_TAILNET_IP:9099/reassure 5m 15s arm64\n' >&2; exit 2; fi
     @command -v ssh >/dev/null 2>&1 || { printf 'test-client: ssh not found\n' >&2; exit 1; }
     @command -v scp >/dev/null 2>&1 || { printf 'test-client: scp not found\n' >&2; exit 1; }
 
@@ -144,7 +143,7 @@ _require_host HOST:
 # reassuring the wrong box. It must be the FULL url, path included — the client
 # POSTs to exactly what it is given and appends nothing.
 _require_client_url url:
-    @if [ -z "{{url}}" ]; then printf 'test-client: set the FULL URL of the daemon endpoint, path included.\n  e.g. just test-client user@raspberrypi http://100.76.187.120:9099/reassure 5m 15s arm64\n' >&2; exit 2; fi
+    @if [ -z "{{url}}" ]; then printf 'test-client: set the FULL URL of the daemon endpoint, path included.\n  e.g. just test-client user@client-host http://VM_TAILNET_IP:9099/reassure 5m 15s arm64\n' >&2; exit 2; fi
     @case "{{url}}" in http://*|https://*) ;; *) printf 'test-client: url must start with http:// or https://, got: %s\n' "{{url}}" >&2; exit 2 ;; esac
 
 # Build, install and start the client on HOST over SSH. The client runs as an

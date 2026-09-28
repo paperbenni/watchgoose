@@ -38,7 +38,7 @@ client that has stopped poking looks, from the machine, exactly like a machine
 nobody can reach.
 
 Usage:
-  goosepoke -url http://100.76.187.120:9099/reassure
+  goosepoke -url http://VM_TAILNET_IP:9099/reassure
   goosepoke -once -url https://work-machine.example/reassure
 
 Flags:
@@ -74,7 +74,7 @@ type options struct {
 
 func newFlagSet() *flag.FlagSet {
 	fs := flag.NewFlagSet("goosepoke", flag.ContinueOnError)
-	fs.String("url", "", "full URL to POST to, e.g. http://100.76.187.120:9099/reassure (required unless -config is given)")
+	fs.String("url", "", "full URL to POST to, e.g. http://VM_TAILNET_IP:9099/reassure (required unless -config is given)")
 	fs.Duration("interval", defaultInterval, "how often to poke")
 	fs.Duration("timeout", defaultTimeout, "per-request timeout for a single poke")
 	fs.Bool("once", false, "send a single poke and exit; non-zero status on failure")
