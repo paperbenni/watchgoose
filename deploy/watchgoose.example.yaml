@@ -1,0 +1,66 @@
+# watchgoose configuration.
+#
+# Installed to /etc/watchgoose.yaml. Every duration is a Go duration string
+# ("20m", "90s"). Anything omitted falls back to the built-in default shown
+# here, so this file only needs to state what differs.
+
+server:
+  # Bind to a tailnet address rather than 0.0.0.0. The heartbeat is
+  # unauthenticated by design (see docs/adr/0006-unauthenticated-heartbeat.md),
+  # so the bind address is the only thing limiting who can reach it.
+  listen: "100.76.187.120:9099"
+  # How often the daemon re-evaluates whether reassurance has gone stale.
+  poll_interval: 1m
+  # Persisted to disk rather than kept in memory, so a crash and respawn is
+  # not mistaken for silence.
+  state_file: /srv/watchgoose/var/last-reassurance
+
+reassurance:
+  # The route the client POSTs to. The body is ignored: the arrival is the
+  # entire signal. There is no signature to verify and no clock agreement
+  # with the client, because the deadline is measured from local receipt time.
+  path: /reassure
+  # How long without reassurance before the machine concludes it is
+  # unreachable. Keep this comfortably above the client's poke interval so
+  # that one missed poke is never mistaken for silence.
+  deadline: 20m
+
+guard:
+  # Boot-loop protection. Read from /proc/uptime and deliberately not
+  # persisted, which is why re-arming on every boot costs no state.
+  min_uptime: 30m
+
+volume:
+  # The data disk holding the ordinary home directories. Repair of those
+  # accounts is skipped when this is not a mountpoint, because writes there
+  # would land on the root disk and be shadowed on a later boot.
+  mountpoint: /home
+
+repair:
+  # Pause after repairing, before the first reboot attempt.
+  settle: 1m
+  # Ordinary accounts, repaired only when the volume is present.
+  accounts:
+    - benjamin
+    - ubuntu
+  # Public keys written to the recovery user, and to each account above when
+  # the volume is present. These are public keys, not secrets.
+  authorized_keys:
+    - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDlLK0Qv/6r5NH46ochYwKSGgGHqMfLj/495Yju97MTsr969rSC8n5I9me7pWhbcJFmcdNTwdr1Jd9NbE+C9FGhW8x2glmHuNjmZBas4WikwYKZHJKG8bqQslAh1DrjpdMMLT9k2YGGz4fOLrSgrs4QzMEHBQkJJC/DpobZfMPO9L7LzRwkGmoYVNEKEPYkfChhlq32EyeW64mNgcX43Tl7F/0S8IEOa2WYrbyCuJ+OAwIjsXKCpqKtI0gBECEKCckXun6Y3w2iQHHuPazryCFmHkNpY/V4K/4v6suparWaYaknIv6cERbnscm9XAawRallJIvLG3OWHuvTZrVn6H13t/fWGJnR9W0xoP6KaZZF+zBzIiQOdfxHTvJjG0M9B+yx6FDUYFziBCRI6GBsG6Zfq9K+5Vg7knP2mClkjv/L6UL6RgbOnj/9o6ipBT2UeifbQV4IVdENzq5qVTHaJ30Nta1AMVGxOCADL4cZI6MNRjZBByBJ+J///dv0gtZ5jBE= benjamin@instantospc"
+  # The standing account whose credentials live on the root disk. Its home
+  # must stay outside volume.mountpoint, which is also what makes it immune
+  # to the simplevm deactivate_homes.sh lockout bug.
+  recovery_user: recovery
+  recovery_home: /srv/recovery
+  recovery_nopasswd_sudo: true
+
+reboot:
+  # How long to wait for a graceful reboot before escalating. The forceful
+  # rung is intentionally not configurable; see
+  # docs/adr/0002-escalate-to-sysrq-b.md.
+  graceful_timeout: 5m
+
+log:
+  # Kept off the journal on purpose: the journal lives under /run, which is
+  # one of the things that has been unreliable on this machine.
+  log_file: /srv/watchgoose/var/watchgoose.log
