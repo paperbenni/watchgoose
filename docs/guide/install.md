@@ -1,8 +1,8 @@
 # Install
 
 Requirements: Linux with systemd, Go 1.27.1 or later, `just`, and a separate
-machine that can reach the VM over the network. Replace `VM_TAILNET_IP` and
-`user@client-host` below with your actual values.
+machine that can reach the VM over the network. Replace `VM_TAILNET_IP` below
+with your actual address.
 
 1. On the VM, copy the
    [example config](https://github.com/paperbenni/watchgoose/blob/main/deploy/watchgoose.example.yaml)
@@ -24,29 +24,26 @@ machine that can reach the VM over the network. Replace `VM_TAILNET_IP` and
    install, it creates a waiting marker; it does not create the recovery
    account.
 
-3. From the **separate machine**, verify the network path and activate the
-   switch with one request:
+3. On the **separate sender machine**, clone the repository and run:
 
    ```sh
-   curl -fsS -X POST -m 10 http://VM_TAILNET_IP:9099/reassure
+   just install-client
    ```
 
-   A successful request has an empty response and exit status 0. The client
-   must keep poking before the 20-minute deadline passes.
+   Enter each watched VM's full URL, such as
+   `http://VM_TAILNET_IP:9099/reassure`, on its own line, then press Enter on
+   a blank line. The path is required. The recipe builds a native static binary,
+   installs it at `/usr/local/bin/goosepoke`, and enables one service per URL.
+   Each service pokes immediately, activating a fresh switch, and then every
+   five minutes. Re-run the
+   recipe to replace the server list. Check the sender's journal with
+   `journalctl -u 'goosepoke@*.service' -f`. A one-off check is
+   `goosepoke -url http://VM_TAILNET_IP:9099/reassure -once`; it exits nonzero
+   if the request fails. `goosepoke -help` lists its interval, timeout, TLS and
+   optional YAML config flags.
 
-4. Install the continuous client from the checkout, over SSH to that
-   separate machine:
-
-   ```sh
-   just test-client user@client-host http://VM_TAILNET_IP:9099/reassure
-   # Add "5m 15s arm64" for an arm64 client host.
-   ```
-
-   This installs `/usr/local/bin/goosepoke` and enables `goosepoke.service`.
-   The URL must include the `/reassure` path. Check the sender's journal with
-   `ssh user@client-host 'journalctl -u goosepoke -f'`. For a one-off client
-   check, run `goosepoke -url http://VM_TAILNET_IP:9099/reassure -once` on that
-   host; it exits nonzero if the request fails. `goosepoke -help` lists its
-   interval, timeout, TLS and optional YAML config flags.
+   If you build on the VM and deploy to a sender over SSH instead, the older
+   `just test-client user@client-host http://VM_TAILNET_IP:9099/reassure`
+   recipe remains available for one server.
 
 See [Network and ports](/guide/network) for firewall and address requirements.

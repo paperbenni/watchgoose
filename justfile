@@ -6,6 +6,7 @@
 #   just            list the recipes
 #   just build      cross-compile static binaries into dist/
 #   just test-vm    install onto THIS machine
+#   just install-client  install the sender on THIS machine, prompting for servers
 #
 # Recipes that change system state all live behind a script in deploy/; this
 # file only decides what to run and with what paths, so that a path is written
@@ -42,6 +43,7 @@ export WATCHGOOSE_UNIT := "/etc/systemd/system/watchgoose.service"
 export WATCHGOOSE_EXAMPLE_CONFIG := REPO / "deploy" / "watchgoose.example.yaml"
 export WATCHGOOSE_UNIT_SRC := REPO / "deploy" / "watchgoose.service"
 export GOOSEPOKE_UNIT := REPO / "deploy" / "goosepoke.service"
+export GOOSEPOKE_INSTANCE_UNIT := REPO / "deploy" / "goosepoke@.service"
 
 # The client lives in cmd/goosepoke and builds to a binary called `goosepoke`.
 # "Poke" on its own is the verb, and a command by that name collides with other
@@ -131,6 +133,12 @@ uninstall-vm:
 # ---------------------------------------------------------------------------
 # Deploy the client to a separate, more reliable host
 # ---------------------------------------------------------------------------
+
+# On the sender, build and install the client; prompt for full server URLs.
+install-client:
+    @mkdir -p "{{DIST}}"
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" -o "{{DIST}}/goosepoke-local" {{GOOSEPOKE_PKG}}
+    deploy/install-client.sh
 
 # Confirm HOST was given. Without it, this does nothing at all, on purpose.
 _require_host HOST:
