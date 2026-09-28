@@ -1,6 +1,9 @@
 # Build output. Cross-compiled static binaries, rebuilt from source, never
 # committed: `just build` is faster than a review of a 2 MB diff.
 /dist/
+/node_modules/
+/docs/.vitepress/dist/
+/docs/.vitepress/cache/
 
 # Stray `go build` output in the repository root. The install scripts
 # deliberately refuse to pick one of these up — a bare `go build` is dynamically
