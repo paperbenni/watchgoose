@@ -128,13 +128,15 @@ func (s *Store) Record(t time.Time) (err error) {
 
 // Stale reports whether the reassurance deadline has passed as of now.
 //
-// A zero last means the machine has never been reassured, which is stale by
-// definition. A last in the future — a clock that has jumped backwards since
-// the poke arrived — is not stale: the deadline is measured from local receipt
-// time precisely so that a wall-clock jump cannot spuriously arm the switch
-// (see docs/adr/0006-unauthenticated-heartbeat.md).
+// A zero last means the machine has never been reassured. A small future
+// timestamp is tolerated as clock skew. A timestamp farther ahead than one
+// deadline is stale: otherwise a large backward clock correction could keep
+// the switch disarmed indefinitely after all pokes stop.
 func Stale(last, now time.Time, deadline time.Duration) bool {
 	if last.IsZero() {
+		return true
+	}
+	if last.After(now.Add(deadline)) {
 		return true
 	}
 	return now.Sub(last) > deadline

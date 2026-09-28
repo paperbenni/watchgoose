@@ -33,6 +33,7 @@ func testDaemon(t *testing.T) (*daemon, config.Config) {
 	cfg.Guard.MinUptime = time.Nanosecond // this machine is certainly up
 	cfg.Volume.Mountpoint = ""
 	cfg.Repair.RecoveryHome = filepath.Join(dir, "recovery")
+	cfg.Repair.AuthorizedKeys = []string{"ssh-ed25519 AAAA test"}
 	cfg.Log.File = filepath.Join(dir, "watchgoose.log")
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("the test configuration is not valid: %v", err)

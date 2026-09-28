@@ -219,15 +219,14 @@ func TestStale(t *testing.T) {
 		last time.Time
 		want bool
 	}{
-		"never reassured":     {time.Time{}, true},
-		"just reassured":      {now.Add(-time.Second), false},
-		"well within":         {now.Add(-deadline / 2), false},
-		"exactly at deadline": {now.Add(-deadline), false},
-		"one second past":     {now.Add(-deadline - time.Second), true},
-		"long past":           {now.Add(-72 * time.Hour), true},
-		// The deadline is measured from local receipt time, so a wall clock
-		// that has jumped backwards cannot arm the switch.
-		"clock jumped backwards": {now.Add(time.Hour), false},
+		"never reassured":      {time.Time{}, true},
+		"just reassured":       {now.Add(-time.Second), false},
+		"well within":          {now.Add(-deadline / 2), false},
+		"exactly at deadline":  {now.Add(-deadline), false},
+		"one second past":      {now.Add(-deadline - time.Second), true},
+		"long past":            {now.Add(-72 * time.Hour), true},
+		"small clock rollback": {now.Add(time.Minute), false},
+		"large clock rollback": {now.Add(time.Hour), true},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -1,27 +1,27 @@
-# Escalate to sysrq-b by arming the magic bit at fire time
+# Escalate to sysrq-b when a graceful reboot stalls
 
-The forceful rung of the reboot ladder enables the kernel sysrq "magic control" bit in
-`/proc/sys/kernel/sysrq` and then writes `b` to `/proc/sysrq-trigger`, which is the only way
-to reboot the kernel without going through systemd. The bit is not enabled in a persistent
-sysctl; it is written at the moment of escalation and is therefore absent during all normal
-operation.
+The forceful rung writes the hardcoded byte `b` to `/proc/sysrq-trigger` after
+the graceful timeout. This uses the kernel directly when systemd cannot finish
+a reboot. It does not write `/proc/sys/kernel/sysrq`: that mask controls keyboard
+invocation only, while privileged writes to `/proc/sysrq-trigger` are allowed
+regardless of the mask. The previous implementation wrote mask `24` based on an
+incorrect reading of the kernel documentation.
 
-## Considered Options
+The byte is fixed in code. No route, configuration value or client request can
+choose another SysRq operation. In particular, this code cannot request `o`
+(poweroff), which would leave this VM down without a way to power it back on.
 
-The alternative was a small helper calling `reboot(2)` directly, which never needs the bit and
-so cannot power off at all. It was rejected because enabling the bit grants no capability
-that root does not already have — `systemctl poweroff` is always available to root — so the
-marginal risk is confined to our own code writing the wrong byte. The bit was made
-fire-time-only anyway, so the dangerous functions (`o` poweroff, `i` kill-all-processes,
-`c` deliberate crash) are unavailable except for a few seconds, and the byte written is a
-hardcoded literal rather than a variable.
+SysRq-b immediately reboots without syncing or unmounting filesystems. It is
+reserved for a graceful reboot that has failed to complete. This last rung can
+lose recent writes; it is still preferable to a machine that remains
+unreachable indefinitely.
 
-## Consequences
+The escalation child must survive the daemon's systemd unit stopping during
+reboot. Its own session does not escape the unit cgroup. The unit therefore uses
+`KillMode=process`: systemd stops the main daemon, while the child ignores
+SIGTERM and remains alive until it acts, sees fresh reassurance, or reaches its
+bounded lifetime. Stopping the service alone while a child is already waiting
+does not cancel that child. Send a reassurance poke before a manual stop when
+abandoning an active reboot ladder.
 
-Root can already shut this machine down, and it will never come back up on its own, because
-there is no hypervisor control panel available to power it on. The switch is therefore built
-so that no code path it owns can reach a power-off: the escalation writes exactly one byte,
-and the decision to escalate is never taken by anything that accepts external input.
-
-`panic=0` on this kernel means a panic hangs rather than reboots, so the reboot-on-oops sysrq
-bit is the only thing standing between a kernel fault and a machine that never returns.
+Kernel reference: https://docs.kernel.org/admin-guide/sysrq.html

@@ -5,12 +5,18 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"regexp"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+var recoveryName = regexp.MustCompile(`^[a-z_][a-z0-9_-]*$`)
 
 // Config is the whole of watchgoose's configuration.
 type Config struct {
@@ -103,8 +109,8 @@ type Log struct {
 	File string `yaml:"log_file"`
 }
 
-// Default returns a configuration with every field populated to a usable
-// value, so that a partial YAML file only overrides what it names.
+// Default supplies the non-secret defaults. An authorized key must still be
+// configured before the daemon may start, so its recovery account can log in.
 func Default() Config {
 	return Config{
 		Server: Server{
@@ -138,7 +144,16 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return cfg, fmt.Errorf("read config: %w", err)
 	}
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
+		return cfg, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return cfg, fmt.Errorf("parse config %s: only one YAML document is allowed", path)
+		}
 		return cfg, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	if err := cfg.Validate(); err != nil {
@@ -160,8 +175,14 @@ func (c Config) Validate() error {
 	if c.Server.StateFile == "" {
 		return fmt.Errorf("server.state_file must be set")
 	}
+	if !filepath.IsAbs(c.Server.StateFile) {
+		return fmt.Errorf("server.state_file must be an absolute path")
+	}
 	if c.Reassurance.Path == "" || c.Reassurance.Path[0] != '/' {
 		return fmt.Errorf("reassurance.path must be an absolute path")
+	}
+	if c.Reassurance.Path == "/health" {
+		return fmt.Errorf("reassurance.path conflicts with the built-in /health route")
 	}
 	if c.Reassurance.Deadline <= c.Server.PollInterval {
 		return fmt.Errorf("reassurance.deadline (%s) must exceed server.poll_interval (%s), "+
@@ -175,6 +196,21 @@ func (c Config) Validate() error {
 	}
 	if c.Repair.RecoveryUser == "" || c.Repair.RecoveryHome == "" {
 		return fmt.Errorf("repair.recovery_user and repair.recovery_home must both be set")
+	}
+	if !recoveryName.MatchString(c.Repair.RecoveryUser) {
+		return fmt.Errorf("repair.recovery_user must be a simple local account name")
+	}
+	if !filepath.IsAbs(c.Repair.RecoveryHome) {
+		return fmt.Errorf("repair.recovery_home must be an absolute path")
+	}
+	if c.Volume.Mountpoint != "" && !filepath.IsAbs(c.Volume.Mountpoint) {
+		return fmt.Errorf("volume.mountpoint must be an absolute path")
+	}
+	if c.Log.File == "" || !filepath.IsAbs(c.Log.File) {
+		return fmt.Errorf("log.log_file must be an absolute path")
+	}
+	if len(c.Repair.AuthorizedKeys) == 0 {
+		return fmt.Errorf("repair.authorized_keys must contain a key so the recovery user can log in")
 	}
 	if c.Volume.Mountpoint != "" && isUnder(c.Repair.RecoveryHome, c.Volume.Mountpoint) {
 		return fmt.Errorf("repair.recovery_home (%s) is inside volume.mountpoint (%s); "+
@@ -194,6 +230,8 @@ func isUnder(path, mountpoint string) bool {
 	if mountpoint == "" {
 		return false
 	}
+	path = filepath.Clean(path)
+	mountpoint = filepath.Clean(mountpoint)
 	if path == mountpoint {
 		return true
 	}

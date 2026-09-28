@@ -154,6 +154,7 @@ func TestValidateURL(t *testing.T) {
 		{"http:///reassure", "no host"},
 		{"://nope", "invalid url"},
 		{"http://host:notaport/reassure", "invalid port"},
+		{"http://user:password@host/reassure", "must not contain credentials"},
 	}
 	for _, tc := range invalid {
 		_, err := validateURL(tc.raw)

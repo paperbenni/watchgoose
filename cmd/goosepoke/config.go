@@ -30,7 +30,7 @@ func usageErrorf(format string, args ...any) error {
 func usage(w io.Writer) {
 	fs := newFlagSet()
 	fs.SetOutput(w)
-	fmt.Fprintf(w, `poke sends reassurance to a watchgoose daemon.
+	fmt.Fprintf(w, `goosepoke sends reassurance to a watchgoose daemon.
 
 The payload is the arrival itself: no credential, no token, no timestamp and
 no signature are sent. Every failure to send is logged loudly, because a poke
@@ -38,8 +38,8 @@ client that has stopped poking looks, from the machine, exactly like a machine
 nobody can reach.
 
 Usage:
-  poke -url http://100.76.187.120:9099/reassure
-  poke -once -url https://work-machine.example/reassure
+  goosepoke -url http://100.76.187.120:9099/reassure
+  goosepoke -once -url https://work-machine.example/reassure
 
 Flags:
 `)
@@ -200,6 +200,9 @@ func validateURL(raw string) (*url.URL, error) {
 	}
 	if u.Host == "" {
 		return nil, usageErrorf("url %q has no host", raw)
+	}
+	if u.User != nil {
+		return nil, usageErrorf("url must not contain credentials")
 	}
 	return u, nil
 }

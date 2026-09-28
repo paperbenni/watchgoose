@@ -6,32 +6,12 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"watchgoose/internal/state"
 )
-
-// The mask is exactly the two bits the forceful rung needs: the magic control
-// bit, without which `b` is ignored, and the sync bit, which flushes the
-// filesystems first. Nothing else, and in particular not the reboot-on-oops
-// bit, which would be a third way to reboot this machine.
-func TestForcefulRungMaskIsExactlyTheTwoBitsItNeeds(t *testing.T) {
-	if magicControl != 8 {
-		t.Errorf("the magic control bit is %d, want 8", magicControl)
-	}
-	if syncBit != 16 {
-		t.Errorf("the sync bit is %d, want 16", syncBit)
-	}
-	if forcefulRungMask != 24 {
-		t.Errorf("the forceful rung mask is %d, want 24", forcefulRungMask)
-	}
-	if got := strconv.Itoa(forcefulRungMask); got != "24" {
-		t.Errorf("the mask written to /proc/sys/kernel/sysrq is %q, want \"24\"", got)
-	}
-}
 
 // ADR 0002 is a promise about the shape of this package, so it is tested
 // against the source rather than only against the behaviour: the one function

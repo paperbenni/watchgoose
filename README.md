@@ -116,8 +116,8 @@ both the host and the URL are given — guessing a target is how you end up
 reassuring the wrong box:
 
 ```sh
-just test-client HOST=user@raspberrypi url=http://100.76.187.120:9099/reassure
-just test-client HOST=user@raspberrypi url=http://100.76.187.120:9099/reassure arch=arm64
+just test-client user@raspberrypi http://100.76.187.120:9099/reassure
+just test-client user@raspberrypi http://100.76.187.120:9099/reassure 5m 15s arm64
 ```
 
 That installs `/usr/local/bin/goosepoke`, renders a `goosepoke.service` unit with the URL
@@ -161,15 +161,16 @@ Explicit flags always win over the file. The file supplies defaults; it does not
 override the command line. Anything the file does not mention falls back to the
 built-in default, so a partial file only overrides what it names.
 
-`goosepoke` exits non-zero only for bad configuration. A network error is transient by
-definition and the loop keeps going.
+In continuous mode, `goosepoke` keeps retrying network errors. In `-once` mode,
+a failed request exits non-zero so a caller can detect it.
 
 ## Configuring the daemon
 
 The daemon's configuration is a single YAML file installed to
 `/etc/watchgoose.yaml`, owned by root. Every duration is a Go duration string
 (`"20m"`, `"90s"`), and anything omitted falls back to the built-in default, so
-the file only needs to state what differs. A fully commented example lives at
+the file only needs to state what differs. At least one authorized key is
+required for the recovery user. Unknown keys are rejected. A fully commented example lives at
 [`deploy/watchgoose.example.yaml`](deploy/watchgoose.example.yaml); the shape is:
 
 ```yaml
@@ -231,8 +232,9 @@ flags for humans.
    The repair log distinguishes "volume absent, only recovery user repaired"
    from "volume present, all accounts repaired", because the two have different
    remedies: a missing volume is fixed by the reboot, not by rewriting keys.
-3. After a settle period, a child process is spawned in its own session, so
-   that it survives the teardown that is about to happen. It sleeps out
+3. After a settle period, a child process is spawned. The unit uses
+   `KillMode=process` so that systemd does not kill that child during teardown.
+   It sleeps out
    `reboot.graceful_timeout` as a backstop for the rung that comes next.
 4. The first rung: a graceful `systemctl reboot`. It is launched and not waited
    for, because a wedged PID 1 may be exactly why the switch is firing.
@@ -341,16 +343,12 @@ help, the dead-man's switch included, because that is exactly the state a
 userspace process cannot be running in. A machine that panics needs a hypervisor
 to cycle it, and there is no control panel to power one back on.
 
-**The escalation rung arms a bit that could also power off.** The forceful rung
-enables the kernel sysrq magic-control bit, which is what makes `b` work at all
-— and which also makes `o` (poweroff), `i` (kill all processes) and `c`
-(deliberate crash) available. It is armed at the moment of escalation and for
-seconds, not enabled in a persistent sysctl, so it is absent during all normal
-operation. The code path can only ever write the reboot byte: it is a hardcoded
-literal, and the decision to escalate is never taken by anything that accepts
-external input. Root could already `systemctl poweroff` this machine anyway, and
-it would not come back on its own, so the marginal risk is confined to this
-project writing the wrong byte
+**The forceful rung can lose recent writes.** It writes the hardcoded reboot
+byte `b` to `/proc/sysrq-trigger` after a graceful reboot stalls. The kernel
+reboots immediately without syncing filesystems. The code cannot choose a
+poweroff byte, and it leaves the system's SysRq mask unchanged. A manual
+service stop while the child is already waiting does not cancel it; send a
+reassurance poke before stopping an active reboot ladder
 ([ADR 0002](docs/adr/0002-escalate-to-sysrq-b.md)).
 
 Also worth knowing: the simplevm metadata timers carry a known, currently-latent
@@ -368,7 +366,7 @@ Each of these is binding on the code and worth reading before changing it.
 | ADR | Summary |
 | --- | --- |
 | [0001](docs/adr/0001-accept-unattended-reboot-loops.md) | Accept unattended reboot loops as the failure mode; the switch re-arms on every boot with no cap. |
-| [0002](docs/adr/0002-escalate-to-sysrq-b.md) | Escalate to `sysrq-b` by arming the magic-control bit at fire time, never persistently. |
+| [0002](docs/adr/0002-escalate-to-sysrq-b.md) | Escalate to `sysrq-b` if a graceful reboot stalls, without changing the SysRq mask. |
 | [0003](docs/adr/0003-leave-simplevm-timers-enabled.md) | Leave the simplevm metadata timers enabled despite their known lockout bug. |
 | [0004](docs/adr/0004-repair-skips-accounts-when-volume-absent.md) | Repair skips the ordinary accounts when the volume is absent, rather than writing to a shadowed path. |
 | [0005](docs/adr/0005-single-daemon.md) | One daemon owns listening, deciding and escalating; no timer, no cron backstop. |

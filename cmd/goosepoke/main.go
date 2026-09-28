@@ -1,4 +1,4 @@
-// Command poke is the client half of a dead-man's switch: it periodically
+// Command goosepoke is the client half of a dead-man's switch: it periodically
 // tells the machine that someone out here can still reach it.
 //
 // The entire payload of a poke is the arrival. There is no credential, no

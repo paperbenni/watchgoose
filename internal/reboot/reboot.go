@@ -19,7 +19,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -27,21 +26,8 @@ import (
 )
 
 const (
-	// sysrqMaskPath is the kernel knob that decides which sysrq functions are
-	// honoured. Writing to it replaces the mask; it does not add to it.
-	sysrqMaskPath = "/proc/sys/kernel/sysrq"
 	// sysrqTriggerPath is the write-only door that performs a sysrq function.
 	sysrqTriggerPath = "/proc/sysrq-trigger"
-
-	// magicControl is the sysrq bit that enables the command keys, value 8.
-	// Without it `b` is silently ignored, so it is required. It is also the
-	// bit that makes the dangerous functions (`o` poweroff, `i` kill all
-	// processes, `c` deliberate crash) available at all — hence ADR 0002's
-	// insistence that it is armed for a few seconds and never persisted.
-	magicControl = 8
-	// syncBit is the sysrq bit that flushes the filesystems, value 16, so
-	// that the reboot costs as little as possible of the work machine.
-	syncBit = 16
 
 	// The child is this same binary re-executed with private flags. Naming
 	// each one makes the child legible in ps, which matters for a process a
@@ -62,11 +48,6 @@ const (
 	spawnWait = 10 * time.Second
 )
 
-// forcefulRungMask is the whole of the sysrq mask the escalation needs: the
-// magic control bit, so that `b` is honoured at all, and the sync bit, so the
-// filesystems are flushed first. Nothing else.
-const forcefulRungMask = magicControl | syncBit
-
 // EscalationSpec is everything the escalation child needs to know. It travels
 // to the child as argv, never as a shell string.
 type EscalationSpec struct {
@@ -85,24 +66,6 @@ type EscalationSpec struct {
 // hardBound is the latest instant the child may act, whatever else happens.
 func (s EscalationSpec) hardBound() time.Time {
 	return time.Now().Add(s.GracefulTimeout + childHardBound)
-}
-
-// ArmForcefulRung enables exactly the sysrq bits the forceful rung needs: the
-// magic control bit so that `b` is honoured at all, and the sync bit so the
-// filesystems are flushed first. That is the mask 24, written whole so that
-// every other bit is cleared.
-//
-// Why this is not done persistently in a sysctl, and why nothing sets it at
-// startup: enabling the magic control bit persistently would leave `o`, `i` and
-// `c` available on this machine forever, to anything able to write
-// /proc/sysrq-trigger. Armed here, at the moment of escalation, those
-// functions exist for only the few seconds between this call and the trigger
-// (docs/adr/0002-escalate-to-sysrq-b.md).
-func ArmForcefulRung() error {
-	if err := writeProcFile(sysrqMaskPath, []byte(strconv.Itoa(forcefulRungMask))); err != nil {
-		return fmt.Errorf("arm forceful rung: enable sysrq bits %d: %w", forcefulRungMask, err)
-	}
-	return nil
 }
 
 // TriggerForcefulReboot reboots the kernel by writing the sysrq reboot command.
@@ -159,11 +122,10 @@ func GracefulReboot(ctx context.Context) error {
 // The child sleeps for the graceful timeout and then takes the forceful rung.
 // It has to survive two things that are about to happen: systemd stopping
 // this process on the way down, and this process dying with it. Setsid puts
-// the child in its own session, so it is not reachable through this process's
-// process group or controlling terminal; SIGTERM and SIGHUP are blocked across
-// the exec, so a signal landing in the window between fork and the child
-// installing its own handlers cannot win that race; and the child ignores
-// both for its whole life.
+// the child in its own session, away from the parent's process group and
+// controlling terminal. The service uses KillMode=process because a new
+// session does not leave its systemd cgroup. Once started, the child ignores
+// SIGTERM and SIGHUP.
 //
 // The child is told the reassurance deadline as well, so that a reassurance
 // arriving during the graceful rung stops the ladder at the last rung too.
@@ -270,12 +232,10 @@ func RunEscalationChild(spec EscalationSpec, log *slog.Logger) int {
 		return 0
 	}
 
-	log.Info("escalation child: arming the forceful rung", with("sysrq_bits", forcefulRungMask)...)
-	if err := ArmForcefulRung(); err != nil {
-		log.Error("escalation child: could not arm the forceful rung", with("error", err)...)
-		return 1
-	}
-	log.Warn("escalation child: rebooting the machine now", fields...)
+	// The kernel permits privileged writes to /proc/sysrq-trigger regardless
+	// of /proc/sys/kernel/sysrq, which controls keyboard invocation only.
+	// SysRq-b is an immediate reboot with no filesystem sync.
+	log.Warn("escalation child: rebooting the machine without syncing filesystems", fields...)
 	if err := TriggerForcefulReboot(); err != nil {
 		log.Error("escalation child: could not trigger the forceful reboot", with("error", err)...)
 		return 1

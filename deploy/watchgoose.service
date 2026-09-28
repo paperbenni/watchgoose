@@ -12,18 +12,22 @@ Type=simple
 ExecStart=/srv/watchgoose/watchgoose -config /etc/watchgoose.yaml
 Restart=always
 RestartSec=5
-# A wedged stop would sit in the way of the reboot rung, so cap it. If the
-# daemon is mid-repair it has already done the part that matters, or it has not
-# started; either way, five seconds of SIGTERM then SIGKILL is the right answer.
+# A wedged stop would sit in the way of the reboot rung, so cap how long
+# systemd waits for the main daemon to exit after SIGTERM.
 TimeoutStopSec=10
+# The escalation child must survive this unit stopping during a stalled reboot.
+# It ignores SIGTERM and has a bounded lifetime. A new session does not move a
+# process out of a systemd cgroup, so the default control-group kill mode would
+# send it SIGKILL after TimeoutStopSec, before its five-minute deadline.
+KillMode=process
 # If the config is bad, the bind address is not up yet, or the binary is wrong,
 # this loop is what recovers. It also means a genuinely bad config produces a
 # restart every 5s in the journal rather than a single clean failure; that is the
 # correct trade for a machine that may be unreachable.
 #
 # Runs as root, and this is not negotiable. Repair runs useradd/usermod and
-# writes /etc/sudoers.d/; the forceful reboot rung writes /proc/sys/kernel/sysrq
-# and /proc/sysrq-trigger (ADR 0002). There is no non-root identity on this
+# writes /etc/sudoers.d/; the forceful reboot rung writes /proc/sysrq-trigger
+# (ADR 0002). There is no non-root identity on this
 # machine that can do those things, and inventing one would add a way to be
 # wrong without removing a way to be attacked. The daemon carries no
 # authentication of any kind (ADR 0006), so the thing being defended against is
@@ -52,7 +56,9 @@ TimeoutStopSec=10
 # Modest hardening, limited to what cannot break repair.
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
+# Account repair writes /etc/passwd, /etc/shadow and /etc/sudoers.d. Even
+# ProtectSystem=full makes /etc read-only, so it would disable repair.
+ProtectSystem=true
 # Explicitly FALSE, and it must stay false.
 #
 # ProtectHome=true would hide /home from the daemon. The volume holding the
@@ -65,22 +71,14 @@ ProtectHome=false
 # ── Omitted on purpose. Each of these looks like free hardening and each one
 # ── breaks a rung of the reboot ladder. Do not add them.
 #
-# ProtectKernelTunables  — makes /proc/sys read-only, which is precisely where
-#   the escalation writes the magic control bit (ADR 0002). Without the bit,
-#   /proc/sysrq-trigger is inert and the forceful reboot does not exist; the
-#   graceful rung times out and the machine stays up forever, which is the one
-#   outcome this whole project exists to prevent.
+# ProtectKernelTunables — makes /proc/sysrq-trigger read-only, disabling the
+#   forceful rung (ADR 0002).
 #
-# ProtectSystem=strict   — extends the read-only mount to /etc, and the repair
-#   step writes /etc/sudoers.d/ and edits account records. Strict would also
-#   make /srv/watchgoose read-only, taking the log and the state file with it.
-#   `full` is the most that is safe here.
+# ProtectSystem=full or strict — full already makes /etc read-only. Strict
+#   additionally makes /srv/watchgoose read-only, including log and state.
 #
-# ProtectKernelModules   — remounts /proc/sys/module and blocks module
-#   operations. Not on the daemon's own path today, but it is one namespace away
-#   from the sysrq path above and this unit has no business narrowing the kernel
-#   interface of a process whose entire job is to be able to power-cycle the
-#   machine.
+# ProtectKernelModules — unnecessary for the current workload; retained as a
+#   conservative operational choice until the unit is tested on a scratch VM.
 #
 # Also deliberately not set, for the same class of reason:
 #
@@ -99,7 +97,7 @@ ProtectHome=false
 #
 # CapabilityBoundingSet / SystemCallFilter
 #   — left unset deliberately. The daemon runs useradd, usermod, writes
-#   sudoers.d, and writes kernel sysrq state; narrowing the capability set or
+#   sudoers.d, and writes the kernel sysrq trigger; narrowing the capability set or
 #   the syscall filter for this workload means rediscovering the full set by
 #   trial and error on the one machine where a mistake is unrecoverable. If
 #   someone wants to narrow it, do it on a scratch machine and add the

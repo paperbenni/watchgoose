@@ -353,7 +353,7 @@ func (d *daemon) escalate(ctx context.Context) {
 	if !d.checkpoint("repair") {
 		return
 	}
-	report, err := repair.Perform(d.cfg, d.log)
+	report, err := repair.Perform(ctx, d.cfg, d.log)
 	if err != nil {
 		d.log.Error("repair could not run at all; continuing to the reboot", "error", err)
 	} else {

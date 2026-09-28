@@ -210,6 +210,15 @@ else
     ok "installed ${CONFIG_PATH} (root:root 0644 — public keys only, no secrets)"
 fi
 
+# Validate before enabling a switch that may act immediately on an old VM.
+# A rejected config must never be installed as a restarting service.
+say "Validating the installed config before starting the service"
+if ! CHECK_OUTPUT="$("${BIN_DST}" -config "${CONFIG_PATH}" -check 2>&1)"; then
+    printf '%s\n' "${CHECK_OUTPUT}" | sed 's/^/      /'
+    die "the daemon rejected ${CONFIG_PATH}; service was not started"
+fi
+ok "the daemon accepts ${CONFIG_PATH}"
+
 # 4. Unit and service --------------------------------------------------------
 say "systemd unit"
 install -m 0644 -o root -g root "${UNIT_SRC}" "${UNIT_PATH}"

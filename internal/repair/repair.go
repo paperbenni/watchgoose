@@ -13,6 +13,7 @@
 package repair
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -21,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"watchgoose/internal/config"
 	"watchgoose/internal/mountinfo"
@@ -46,6 +48,9 @@ const (
 	// interactively. A recovery account with no shell is not a recovery
 	// account.
 	bashShell = "/bin/bash"
+	// A broken NSS backend or account database must not hold the entire switch
+	// before it reaches the reboot ladder.
+	commandTimeout = 20 * time.Second
 )
 
 // Report is the outcome of one repair, in enough detail for the caller to say
@@ -76,8 +81,8 @@ type Report struct {
 }
 
 // Perform repairs the machine according to cfg and reports what it did.
-func Perform(cfg config.Config, log *slog.Logger) (Report, error) {
-	return newRepairer(cfg, systemActor(log)).perform()
+func Perform(ctx context.Context, cfg config.Config, log *slog.Logger) (Report, error) {
+	return newRepairer(cfg, systemActor(ctx, log)).perform()
 }
 
 // actor is the seam through which repair touches the outside world: the shell
@@ -93,10 +98,10 @@ type actor struct {
 	sudoersPath string
 }
 
-func systemActor(log *slog.Logger) *actor {
+func systemActor(ctx context.Context, log *slog.Logger) *actor {
 	return &actor{
 		log:          log,
-		run:          runCommand,
+		run:          func(name string, args ...string) (string, error) { return runCommand(ctx, name, args...) },
 		isMountpoint: mountinfo.IsMountpoint,
 		sudoersPath:  defaultSudoersPath,
 	}
@@ -108,12 +113,16 @@ func systemActor(log *slog.Logger) *actor {
 // involved and no configuration value is ever interpolated into a command
 // line, so a hostile or merely careless key, username or path cannot become
 // anything but an argument.
-func runCommand(name string, args ...string) (string, error) {
+func runCommand(ctx context.Context, name string, args ...string) (string, error) {
 	// name and args go to exec.Command as an argv slice. No shell is ever
 	// involved and no configuration value is ever interpolated into a command
 	// line, so a careless key, username or path cannot become anything but an
 	// argument.
-	out, err := exec.Command(name, args...).CombinedOutput()
+	commandCtx, cancel := context.WithTimeout(ctx, commandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(commandCtx, name, args...)
+	cmd.WaitDelay = 2 * time.Second
+	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 
@@ -188,6 +197,9 @@ func (r *repairer) repairRecoveryUser() {
 		if out, err := r.a.run("usermod", "-d", home, user); err != nil {
 			r.warn("the recovery user %s has home %s and usermod could not move it to %s: %v: %s",
 				user, entry.Home, home, err, oneline(out))
+			// Continuing would write the recovery keys into the old home,
+			// potentially on the missing data volume.
+			return
 		} else {
 			r.a.log.Info("recovery user home corrected", "user", user, "was", entry.Home, "now", home)
 			entry.Home = home
@@ -244,20 +256,33 @@ func (r *repairer) repairSudoers() {
 	// a sudoers file that does not parse is worse than that, because sudo
 	// refuses to run at all when any included file is broken.
 	line := fmt.Sprintf("%s ALL=(ALL:ALL) NOPASSWD: ALL\n", user)
-	if err := writeFileAtomic(path, line, sudoersMode); err != nil {
-		r.warn("could not write %s: %v", path, err)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".watchgoose-sudoers-*")
+	if err != nil {
+		r.warn("could not create a temporary sudoers file beside %s: %v", path, err)
 		return
 	}
-	if out, err := r.a.run("visudo", "-c", "-f", path); err != nil {
-		// Remove it: leaving a broken file in sudoers.d breaks sudo for
-		// everyone on the machine, including the human this grant exists for.
-		if rmErr := os.Remove(path); rmErr != nil {
-			r.warn("sudoers file %s is invalid and could not be removed (%v); sudo may be broken: %v: %s",
-				path, rmErr, err, oneline(out))
-			return
-		}
-		r.warn("sudoers file %s did not validate and has been removed rather than left broken: %v: %s",
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(line); err != nil {
+		tmp.Close()
+		r.warn("could not write temporary sudoers file for %s: %v", path, err)
+		return
+	}
+	if err := tmp.Chmod(sudoersMode); err != nil {
+		tmp.Close()
+		r.warn("could not set mode on temporary sudoers file for %s: %v", path, err)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		r.warn("could not close temporary sudoers file for %s: %v", path, err)
+		return
+	}
+	if out, err := r.a.run("visudo", "-c", "-f", tmp.Name()); err != nil {
+		r.warn("sudoers grant for %s did not validate; existing grant left in place: %v: %s",
 			path, err, oneline(out))
+		return
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		r.warn("could not install validated sudoers grant at %s: %v", path, err)
 		return
 	}
 	r.a.log.Info("passwordless sudo granted to the recovery user", "user", user, "path", path)

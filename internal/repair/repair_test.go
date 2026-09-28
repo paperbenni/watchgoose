@@ -1,6 +1,7 @@
 package repair
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -169,7 +170,12 @@ func (f *fakeSystem) run(name string, args ...string) (string, error) {
 		}
 		return "", nil
 
-	case "chown", "visudo":
+	case "visudo":
+		if f.visudoErr != nil {
+			return "simulated failure: " + f.visudoErr.Error(), f.visudoErr
+		}
+		return "", nil
+	case "chown":
 		return "", nil
 	}
 	return "", fmt.Errorf("fakeSystem does not implement %q", name)
@@ -348,6 +354,18 @@ func TestCorrectsARecoveryUserWithTheWrongHomeOrShellOrLock(t *testing.T) {
 	// The keys follow the account to its corrected home.
 	if _, err := os.Stat(filepath.Join(cfg.Repair.RecoveryHome, ".ssh", "authorized_keys")); err != nil {
 		t.Errorf("the recovery user's keys are not in the corrected home: %v", err)
+	}
+}
+
+func TestFailedRecoveryHomeCorrectionDoesNotWriteKeysToOldHome(t *testing.T) {
+	f := newFakeSystem(t)
+	cfg := testConfig(t, f)
+	oldHome := filepath.Join(t.TempDir(), "old-home")
+	f.addUser("recovery", oldHome, "/bin/bash", false)
+	f.fail["usermod -d "+cfg.Repair.RecoveryHome+" recovery"] = fmt.Errorf("account database unavailable")
+	perform(t, cfg, f)
+	if _, err := os.Stat(filepath.Join(oldHome, ".ssh", "authorized_keys")); !os.IsNotExist(err) {
+		t.Fatalf("keys written to the old home despite failed correction: %v", err)
 	}
 }
 
@@ -655,7 +673,7 @@ func TestAValidSudoersGrantIsLeftInPlace(t *testing.T) {
 	if perm := info.Mode().Perm(); perm != 0o440 {
 		t.Errorf("the sudoers file is %#o, want 0440", perm)
 	}
-	if !f.ran("visudo -c -f " + path) {
+	if len(f.callsTo("visudo")) == 0 {
 		t.Errorf("the sudoers file was not validated; calls: %v", f.calls)
 	}
 }
@@ -664,8 +682,7 @@ func TestAnInvalidSudoersFileIsRemovedRatherThanLeftBroken(t *testing.T) {
 	f := newFakeSystem(t)
 	cfg := testConfig(t, f)
 	cfg.Repair.RecoveryNopasswdSudo = true
-	f.fail["visudo -c -f "+filepath.Join(f.sudoersDir, "watchgoose-recovery")] =
-		fmt.Errorf("syntax error, unexpected end of file")
+	f.visudoErr = fmt.Errorf("syntax error, unexpected end of file")
 
 	rep := perform(t, cfg, f)
 
@@ -675,6 +692,23 @@ func TestAnInvalidSudoersFileIsRemovedRatherThanLeftBroken(t *testing.T) {
 	}
 	if !hasWarningAbout(rep.Warnings, path) {
 		t.Errorf("Warnings = %v, want one that names the broken sudoers file", rep.Warnings)
+	}
+}
+
+func TestInvalidSudoersUpdatePreservesExistingGrant(t *testing.T) {
+	f := newFakeSystem(t)
+	cfg := testConfig(t, f)
+	cfg.Repair.RecoveryNopasswdSudo = true
+	path := filepath.Join(f.sudoersDir, "watchgoose-recovery")
+	previous := []byte("recovery ALL=(ALL:ALL) NOPASSWD: ALL\n")
+	if err := os.WriteFile(path, previous, 0o440); err != nil {
+		t.Fatal(err)
+	}
+	f.visudoErr = fmt.Errorf("visudo unavailable")
+	perform(t, cfg, f)
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(previous) {
+		t.Fatalf("existing sudo grant was lost: %q, %v", got, err)
 	}
 }
 
@@ -732,6 +766,19 @@ func TestPerformRejectsAConfigurationItCannotActOn(t *testing.T) {
 	}
 	if len(f.calls) != 0 {
 		t.Errorf("perform ran %v despite an unusable configuration", f.calls)
+	}
+}
+
+func TestRunCommandStopsWhenRepairIsCancelled(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := runCommand(ctx, "sleep", "5")
+	if err == nil {
+		t.Fatal("long-running repair command ignored cancellation")
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("repair command kept the switch blocked after cancellation")
 	}
 }
 
