@@ -2,13 +2,14 @@
 #
 # Installed to /etc/watchgoose.yaml. Every duration is a Go duration string
 # ("20m", "90s"). Anything omitted falls back to the built-in default shown
-# here, so this file only needs to state what differs.
+# here, so this file only needs to state what differs. The active values below
+# show every setting; replace the two required empty values before installing.
 
 server:
-  # Bind to a tailnet address rather than 0.0.0.0. The heartbeat is
-  # unauthenticated by design (see docs/adr/0006-unauthenticated-heartbeat.md),
-  # so the bind address is the only thing limiting who can reach it.
-  listen: "" # required: set this VM's tailnet IP and port, e.g. "100.x.y.z:9099"
+  # Bind to a private or tailnet address rather than 0.0.0.0. The endpoint is
+  # unauthenticated; use network policy to limit who can reach it (ADR 0006).
+  # Example: listen: "100.101.102.103:9099"  # replace with this VM's address
+  listen: "" # required
   # How often the daemon re-evaluates whether reassurance has gone stale.
   poll_interval: 1m
   # Persisted to disk rather than kept in memory, so a crash and respawn is
@@ -34,19 +35,25 @@ volume:
   # The data disk holding the ordinary home directories. Repair of those
   # accounts is skipped when this is not a mountpoint, because writes there
   # would land on the root disk and be shadowed on a later boot.
-  mountpoint: "" # set only if ordinary account homes live on a separate mount
+  # Example for homes on a separate volume: mountpoint: /home
+  mountpoint: "" # empty when homes are on the root disk
 
 repair:
   # Pause after repairing, before the first reboot attempt.
   settle: 1m
   # Ordinary accounts, repaired only when the volume is present.
-  accounts: [] # optional ordinary accounts to repair
+  # Example: accounts: [alice, bob]
+  accounts: [] # empty when only the recovery user needs repair
   # Public keys written to the recovery user, and to each account above when
   # the volume is present. These are public keys, not secrets.
+  # Examples of the list shape; replace the placeholder key data with the full
+  # contents of your own .pub files. These commented keys are not usable keys.
+  # authorized_keys:
+  #   - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... alice@laptop"
+  #   - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... bob@desktop"
   authorized_keys: [] # required: add at least one real public key
   # The standing account whose credentials live on the root disk. Its home
-  # must stay outside volume.mountpoint, which is also what makes it immune
-  # to the simplevm deactivate_homes.sh lockout bug.
+  # must stay outside volume.mountpoint.
   recovery_user: recovery
   recovery_home: /srv/recovery
   recovery_nopasswd_sudo: true
@@ -58,6 +65,5 @@ reboot:
   graceful_timeout: 5m
 
 log:
-  # Kept off the journal on purpose: the journal lives under /run, which is
-  # one of the things that has been unreliable on this machine.
+  # Persistent audit log on the root disk, independent of the journal.
   log_file: /srv/watchgoose/var/watchgoose.log

@@ -109,6 +109,14 @@ machine that can reach the VM over the network. Replace `VM_TAILNET_IP` and
   not the VM's health.
 - The daemon's audit log is `/srv/watchgoose/var/watchgoose.log`. Startup and
   service errors are also visible with `journalctl -u watchgoose`.
+- If SSH is locked out but the HTTP endpoint is still reachable, the automatic
+  client keeps reassuring the VM and repair will not start. To deliberately
+  trigger repair, **on the separate sender machine** run
+  `sudo systemctl disable --now goosepoke`. With no other sender poking, the VM
+  acts after the remaining reassurance deadline and uptime floor, then repairs
+  and reboots. This is not immediate. Once access is restored, run
+  `sudo systemctl enable --now goosepoke` on the sender so the VM does not
+  repeat the reboot cycle. Do not send manual pokes while waiting for repair.
 - Before the reboot ladder starts, a successful poke prevents it from starting.
   Once reboot has been requested, wait for the VM to return, then check it and
   resume poking. A poke during reboot is not a cancellation command.
