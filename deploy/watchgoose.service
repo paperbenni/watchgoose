@@ -9,11 +9,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/srv/watchgoose/watchgoose -config /etc/watchgoose.yaml
+ExecStart=/srv/watchgoose/watchgoose listen -config /etc/watchgoose.yaml
 # After an explicit stop, cancel any child that KillMode=process leaves running.
 # This runs after the daemon exits, closing the spawn race. It preserves children
 # during shutdown and after an unexpected daemon failure.
-ExecStopPost=/srv/watchgoose/watchgoose -cancel-escalation-children-unless-shutdown
+ExecStopPost=/srv/watchgoose/watchgoose listen -cancel-escalation-children-unless-shutdown
 Restart=always
 RestartSec=5
 # A wedged stop would sit in the way of the reboot rung, so cap how long

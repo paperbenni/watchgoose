@@ -1,9 +1,9 @@
 # How it works
 
-| Program | Where it runs | What it does |
+| Mode | Where it runs | What it does |
 | --- | --- | --- |
-| `watchgoose` | The VM | Receives reassurance, records each request's arrival time, and checks the deadline. |
-| `goosepoke` | A separate, more reliable machine | Sends an empty HTTP `POST` immediately on start and then at a set interval. |
+| `watchgoose listen` | The VM | Receives reassurance, records each request's arrival time, and checks the deadline. |
+| `watchgoose poke` | A separate, more reliable machine | Sends an empty HTTP `POST` immediately on start and then at a set interval. |
 
 The example setup sends `POST /reassure` every **5 minutes**. The VM replies
 with HTTP **204 No Content** and records its own receipt time. The sender's
@@ -21,7 +21,7 @@ After that, the recorded timestamp survives service restarts and VM boots;
 the normal deadline applies without another setup step. A lost or corrupt
 state file after installation is treated as missed reassurance.
 
-`goosepoke` must run on another machine. It logs failed requests and keeps
+The poker must run on another machine. It logs failed requests and keeps
 retrying; a failed client or network path otherwise looks like an unreachable
 VM to the daemon. A poke means only that this HTTP request arrived. It is
 not proof that SSH or any other service works.

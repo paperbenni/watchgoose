@@ -1,10 +1,16 @@
 # watchgoose
 
-A dead-man's switch. Two programs: `watchgoose`, which runs on a machine and acts when it
-stops hearing from outside, and `goosepoke`, which runs on something more reliable and keeps
-speaking to it. The machine repairs its own access and reboots; nobody has to notice.
+A dead-man's switch. A machine listens for reassurance from another, more
+reliable machine. When reassurance stops, the listening machine repairs its
+own access and reboots; nobody has to notice.
 
 ## Language
+
+**Listener**:
+The machine that receives reassurance and acts when it stops arriving.
+
+**Poker**:
+The separate machine that periodically sends reassurance to a listener.
 
 **Work machine**:
 A machine whose purpose is one person's access to their own work, not the availability of a

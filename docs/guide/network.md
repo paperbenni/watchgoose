@@ -2,14 +2,14 @@
 
 | Host | Required connection | Example |
 | --- | --- | --- |
-| VM | Inbound TCP from the `goosepoke` host to `server.listen` | Port `9099` on the VM's tailnet IP |
-| `goosepoke` host | Outbound TCP to the VM's address and port | `VM_TAILNET_IP:9099` |
+| Listener VM | Inbound TCP from the poker to `server.listen` | Port `9099` on the VM's tailnet IP |
+| Poker host | Outbound TCP to the VM's address and port | `VM_TAILNET_IP:9099` |
 
 If a host firewall or tailnet ACL blocks that path, allow the client to reach
 the VM on the configured TCP port. No public internet port is required.
-`goosepoke` needs no inbound port, and watchgoose uses no UDP ports. The HTTP
+The poker needs no inbound port, and watchgoose uses no UDP ports. The HTTP
 response uses the same connection. The `/health` endpoint uses the **same VM
-port**. SSH is used to deploy the client and log into the VM, but is separate
+port**. SSH may be used to log into the VM, but is separate
 from this signal.
 
 Bind `server.listen` to the VM's private or tailnet IP, such as

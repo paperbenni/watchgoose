@@ -1,4 +1,4 @@
-package main
+package poker
 
 import (
 	"errors"
@@ -10,12 +10,12 @@ import (
 	"strconv"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"watchgoose/internal/pokeconfig"
 )
 
 const (
-	defaultInterval = 5 * time.Minute
-	defaultTimeout  = 15 * time.Second
+	defaultInterval = pokeconfig.DefaultInterval
+	defaultTimeout  = pokeconfig.DefaultTimeout
 )
 
 // errUsage marks a configuration problem. It is the only class of failure
@@ -30,7 +30,7 @@ func usageErrorf(format string, args ...any) error {
 func usage(w io.Writer) {
 	fs := newFlagSet()
 	fs.SetOutput(w)
-	fmt.Fprintf(w, `goosepoke sends reassurance to a watchgoose daemon.
+	fmt.Fprintf(w, `watchgoose poke sends reassurance to a watchgoose listener.
 
 The payload is the arrival itself: no credential, no token, no timestamp and
 no signature are sent. Every failure to send is logged loudly, because a poke
@@ -38,8 +38,8 @@ client that has stopped poking looks, from the machine, exactly like a machine
 nobody can reach.
 
 Usage:
-  goosepoke -url http://VM_TAILNET_IP:9099/reassure
-  goosepoke -once -url https://work-machine.example/reassure
+  watchgoose poke -url http://VM_TAILNET_IP:9099/reassure
+  watchgoose poke -once -url https://work-machine.example/reassure
 
 Flags:
 `)
@@ -50,15 +50,9 @@ insecure. Explicit flags win over the file.
 `)
 }
 
-// fileConfig is the optional on-disk configuration. It is deliberately a
-// different schema from internal/config: that one is the daemon's, and the
-// only keys that make sense to the client are the four below.
-type fileConfig struct {
-	URL      string         `yaml:"url"`
-	Interval *time.Duration `yaml:"interval"`
-	Timeout  *time.Duration `yaml:"timeout"`
-	Insecure *bool          `yaml:"insecure"`
-}
+// fileConfig is the optional on-disk configuration shared with the installer.
+// It is distinct from the daemon's configuration in internal/config.
+type fileConfig = pokeconfig.File
 
 // options is the fully resolved configuration for one run.
 type options struct {
@@ -73,7 +67,7 @@ type options struct {
 }
 
 func newFlagSet() *flag.FlagSet {
-	fs := flag.NewFlagSet("goosepoke", flag.ContinueOnError)
+	fs := flag.NewFlagSet("watchgoose poke", flag.ContinueOnError)
 	fs.String("url", "", "full URL to POST to, e.g. http://VM_TAILNET_IP:9099/reassure (required unless -config is given)")
 	fs.Duration("interval", defaultInterval, "how often to poke")
 	fs.Duration("timeout", defaultTimeout, "per-request timeout for a single poke")
@@ -164,8 +158,8 @@ func loadFile(path string) (fileConfig, error) {
 	if err != nil {
 		return fileConfig{}, usageErrorf("read config: %v", err)
 	}
-	var cfg fileConfig
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+	cfg, err := pokeconfig.Parse(raw)
+	if err != nil {
 		return fileConfig{}, usageErrorf("parse config %s: %v", path, err)
 	}
 	return cfg, nil
@@ -191,18 +185,9 @@ func (o options) validate() error {
 
 // validateURL checks that the target is something a poke can actually reach.
 func validateURL(raw string) (*url.URL, error) {
-	u, err := url.Parse(raw)
+	u, err := pokeconfig.ValidateURL(raw)
 	if err != nil {
-		return nil, usageErrorf("invalid url %q: %v", raw, err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, usageErrorf("url %q must be http or https, got %q", raw, u.Scheme)
-	}
-	if u.Host == "" {
-		return nil, usageErrorf("url %q has no host", raw)
-	}
-	if u.User != nil {
-		return nil, usageErrorf("url must not contain credentials")
+		return nil, fmt.Errorf("%w: %v", errUsage, err)
 	}
 	return u, nil
 }

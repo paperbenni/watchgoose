@@ -7,20 +7,20 @@
   the switch, not the VM's health.
 - The daemon's audit log is `/srv/watchgoose/var/watchgoose.log`. Startup and
   service errors are also visible with `journalctl -u watchgoose`.
-- On the sender, `journalctl -u 'goosepoke@*.service' -f` shows successful and
-  failed pokes. The instance numbers and URLs are printed by `just install-client`.
+- On the poker, `journalctl -u 'watchgoose-poke@*.service' -f` shows successful
+  and failed pokes. The instance numbers and URLs are printed by `just setup`.
 
 ## Deliberately trigger repair after an SSH lockout
 
 If SSH is locked out but the HTTP endpoint is still reachable, the automatic
-client keeps reassuring the VM and repair will not start. On the **separate
-sender machine**, stop and disable the client:
+poker keeps reassuring the VM and repair will not start. On the **separate
+poker machine**, stop and disable the relevant instance:
 
-Use the instance number assigned to that VM by `just install-client` (shown
-in its install summary and `/etc/goosepoke/1.yaml`). For example:
+Use the instance number assigned to that VM by `just setup` (shown in its
+summary and `/etc/watchgoose/poke/1.yaml`). For example:
 
 ```sh
-sudo systemctl disable --now goosepoke@1.service
+sudo systemctl disable --now watchgoose-poke@1.service
 ```
 
 With no other sender poking, the VM acts after the remaining reassurance
@@ -31,7 +31,7 @@ Once access is restored, re-enable the sender so the VM does not repeat the
 reboot cycle:
 
 ```sh
-sudo systemctl enable --now goosepoke@1.service
+sudo systemctl enable --now watchgoose-poke@1.service
 ```
 
 Before the reboot ladder starts, a successful poke prevents it from starting.
