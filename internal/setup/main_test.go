@@ -1,6 +1,9 @@
 package setup
 
 import (
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -27,6 +30,26 @@ func TestPrepareConfigsPreservesURLs(t *testing.T) {
 		if cfg.URL != urls[i] {
 			t.Errorf("config %d URL = %q, want %q", i, cfg.URL, urls[i])
 		}
+	}
+}
+
+func TestExistingPokerURLsOrderedByInstance(t *testing.T) {
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"2.yaml": "url: https://two.example/reassure\n",
+		"1.yaml": "url: https://one.example/reassure\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{"https://one.example/reassure", "https://two.example/reassure"}
+	got, err := existingPokerURLs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("URLs = %#v, want %#v", got, want)
 	}
 }
 

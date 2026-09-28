@@ -20,21 +20,24 @@ const (
 	listenerBinaryPath = "/srv/watchgoose/watchgoose"
 )
 
-func promptListener() (config.Config, []byte, error) {
-	cfg := config.Default()
-	var listen, keys, mountpoint, accounts string
-	var sudo bool
+func promptListener(initial config.Config) (config.Config, []byte, error) {
+	cfg := initial
+	listen := cfg.Server.Listen
+	keys := strings.Join(cfg.Repair.AuthorizedKeys, "\n")
+	mountpoint := cfg.Volume.Mountpoint
+	accounts := strings.Join(cfg.Repair.Accounts, ", ")
+	sudo := cfg.Repair.RecoveryNopasswdSudo
 	if err := huh.NewForm(huh.NewGroup(
-		huh.NewInput().Title("Tailnet listen address (IP:port)").Placeholder("100.64.0.10:9099").Value(&listen).
+		huh.NewInput().Title("Tailnet listen address (IP:port)").Description("Detected from Tailscale when available; edit as needed.").Placeholder("100.64.0.10:9099").Value(&listen).
 			Validate(validateListen),
-		huh.NewText().Title("Recovery SSH public keys (one per line)").Value(&keys).
+		huh.NewText().Title("Recovery SSH public keys (one per line)").Description("Review these login keys; keep only keys whose private halves you can use.").Value(&keys).
 			Validate(func(s string) error {
 				if len(splitLines(s)) == 0 {
 					return fmt.Errorf("enter at least one public key")
 				}
 				return nil
 			}),
-		huh.NewInput().Title("Separate home volume mountpoint (blank if none)").Value(&mountpoint),
+		huh.NewInput().Title("Separate home volume mountpoint (blank if none)").Description("Detected from mounted /home or your mounted home directory.").Value(&mountpoint),
 		huh.NewInput().Title("Accounts to repair (comma separated, blank if none)").Value(&accounts),
 		huh.NewConfirm().Title("Give recovery user passwordless sudo?").Value(&sudo),
 	)).Run(); err != nil {
@@ -106,6 +109,7 @@ func listenerYAML(cfg config.Config) ([]byte, error) {
 
 func setupListener(binary string) error {
 	var cfg config.Config
+	var initial config.Config
 	var data []byte
 	var writeConfig bool
 	if exists(listenerConfigPath) {
@@ -121,13 +125,19 @@ func setupListener(binary string) error {
 			}
 		} else {
 			writeConfig = true
+			if existing, err := config.Load(listenerConfigPath); err == nil {
+				initial = existing
+			} else {
+				initial = detectedListenerDefaults()
+			}
 		}
 	} else {
 		writeConfig = true
+		initial = detectedListenerDefaults()
 	}
 	if writeConfig {
 		var err error
-		cfg, data, err = promptListener()
+		cfg, data, err = promptListener(initial)
 		if err != nil {
 			return err
 		}

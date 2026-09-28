@@ -10,6 +10,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -91,7 +92,17 @@ func Run(args []string) error {
 	urls := []string(supplied)
 	if len(urls) == 0 {
 		var err error
-		urls, err = promptURLs()
+		urls, err = existingPokerURLs(configDir)
+		if err != nil {
+			return err
+		}
+		if len(urls) == 0 {
+			urls, err = existingPokerURLs("/etc/goosepoke")
+			if err != nil {
+				return err
+			}
+		}
+		urls, err = promptURLs(urls)
 		if err != nil {
 			return err
 		}
@@ -108,38 +119,59 @@ func exists(path string) bool {
 	return err == nil
 }
 
-func promptURLs() ([]string, error) {
-	fmt.Printf("Enter each server's full reassurance URL, including its path.\n")
-	fmt.Printf("Example: http://100.64.0.10:9099/reassure\n")
-	fmt.Printf("Pokes run every %s. Leave the next field blank to finish.\n\n", pokeconfig.DefaultInterval)
-	var urls []string
-	for {
-		var answer string
-		field := huh.NewInput().
-			Title(fmt.Sprintf("Server %d URL", len(urls)+1)).
-			Value(&answer).
-			Validate(func(s string) error {
-				if s == "" && len(urls) > 0 {
-					return nil
-				}
-				if err := pokeconfig.ValidateServerURL(s); err != nil {
-					return err
-				}
-				for _, prior := range urls {
-					if prior == s {
-						return fmt.Errorf("URL already entered")
-					}
-				}
-				return nil
-			})
-		if err := field.Run(); err != nil {
-			return nil, err
-		}
-		if answer == "" {
-			return urls, nil
-		}
-		urls = append(urls, answer)
+func promptURLs(existing []string) ([]string, error) {
+	text := strings.Join(existing, "\n")
+	if err := huh.NewText().Title("Listener URLs (one per line)").
+		Description("Include each full /reassure path. Existing URLs are editable; one service runs per line.").
+		Value(&text).
+		Validate(func(s string) error {
+			_, err := prepareConfigs(splitLines(s))
+			return err
+		}).Run(); err != nil {
+		return nil, err
 	}
+	return splitLines(text), nil
+}
+
+func existingPokerURLs(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	type numberedURL struct {
+		number int
+		url    string
+	}
+	var found []numberedURL
+	for _, entry := range entries {
+		base, ok := strings.CutSuffix(entry.Name(), ".yaml")
+		if !ok || base == "" || base[0] == '0' {
+			continue
+		}
+		n, err := strconv.Atoi(base)
+		if err != nil || n < 1 || strconv.Itoa(n) != base {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read existing poker config %s: %w", path, err)
+		}
+		cfg, err := pokeconfig.Parse(data)
+		if err != nil {
+			return nil, fmt.Errorf("parse existing poker config %s: %w", path, err)
+		}
+		found = append(found, numberedURL{n, cfg.URL})
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].number < found[j].number })
+	urls := make([]string, 0, len(found))
+	for _, item := range found {
+		urls = append(urls, item.url)
+	}
+	return urls, nil
 }
 
 // prepareConfigs validates every URL and serializes through the client's own
