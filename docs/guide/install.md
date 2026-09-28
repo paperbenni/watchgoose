@@ -10,8 +10,8 @@ The command downloads the latest Linux binary, checks its SHA-256 checksum,
 and opens the setup wizard. Choose **Listen and repair this machine** on the VM
 that needs recovery. Choose **Poke other machines** on a separate, more reliable
 machine. Both machines need Linux with systemd, `curl`, and network access to
-each other. The one-line command will work after the first release is
-published; use the source-build instructions below until then.
+each other. Each push to `main` automatically builds and publishes a release;
+the one-line command uses the latest one.
 
 On the listener, review the suggested Tailscale address, mounted home volume,
 and SSH public keys. The wizard installs the binary, config, and service, then
@@ -26,8 +26,8 @@ minutes. Rerun setup to edit the prefilled server list.
 
 ## Build from source
 
-Until a release is available, install Go 1.27.1 or later and `just`, then run
-this on each machine:
+If no release has been published yet, install Go 1.27.1 or later and `just`,
+then run this on each machine:
 
 ```sh
 git clone https://github.com/paperbenni/watchgoose.git

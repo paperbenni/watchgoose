@@ -2,8 +2,11 @@ name: Release binaries
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+
+concurrency:
+  group: watchgoose-releases
+  queue: max
 
 permissions:
   contents: write
@@ -28,4 +31,14 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/watchgoose-linux-amd64 dist/watchgoose-linux-amd64.sha256 dist/watchgoose-linux-arm64 dist/watchgoose-linux-arm64.sha256 --verify-tag --generate-notes
+        run: |
+          tag="main-$GITHUB_SHA"
+          latest=--latest=false
+          if [[ $(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha) == "$GITHUB_SHA" ]]; then
+            latest=--latest
+          fi
+          gh release create "$tag" \
+            dist/watchgoose-linux-amd64 dist/watchgoose-linux-amd64.sha256 \
+            dist/watchgoose-linux-arm64 dist/watchgoose-linux-arm64.sha256 \
+            --target "$GITHUB_SHA" --title "main ${GITHUB_SHA::12}" \
+            --generate-notes "$latest"
