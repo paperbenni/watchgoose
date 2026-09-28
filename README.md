@@ -1,5 +1,9 @@
 # watchgoose
 
+<img width="554" height="1108" alt="image" src="https://github.com/user-attachments/assets/627c8bd1-dfba-41d8-b7a4-a47c34729755" />
+
+> If you don't honk, VM gets bonk
+
 watchgoose is a dead-man's switch for a Linux work VM. A second machine sends
 periodic HTTP requests to the VM. If they stop arriving, the VM repairs SSH
 access and reboots. It measures whether the sender can reach the VM; it does
