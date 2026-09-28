@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
+
+var errAccountMissing = errors.New("account not found")
 
 // passwdEntry is the part of a passwd record that repair cares about.
 type passwdEntry struct {
@@ -37,10 +40,13 @@ func (a *actor) lookup(name string) (passwdEntry, bool, []string) {
 	out, err := a.run("getent", "passwd", name)
 	record := firstLine(out)
 	if record == "" {
-		// getent exits non-zero when there is no such user, and prints
-		// nothing. Some NSS backends do the opposite, so the output is what
-		// decides, not the exit status.
-		return passwdEntry{}, false, nil
+		var exitErr *exec.ExitError
+		if errors.Is(err, errAccountMissing) || errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
+			return passwdEntry{}, false, nil
+		}
+		msg := fmt.Sprintf("could not determine whether account %s exists: getent produced no record: %v", name, err)
+		a.log.Warn("repair: " + msg)
+		return passwdEntry{}, false, []string{msg}
 	}
 	if err != nil {
 		a.log.Debug("getent reported an error but printed a record", "account", name, "output", oneline(out), "error", err)

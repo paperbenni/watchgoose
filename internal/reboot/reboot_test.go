@@ -50,8 +50,10 @@ func TestTheForcefulRungIsAHardcodedByte(t *testing.T) {
 						triggerRefs++
 					}
 				case *ast.CompositeLit:
-					// Every byte slice in the package: []byte{'b'} and
-					// anything that could have been written to the trigger.
+					if fn.Name.Name != "TriggerForcefulReboot" {
+						return true
+					}
+					// Check bytes built by the trigger function itself.
 					id, ok := node.Type.(*ast.ArrayType)
 					if !ok {
 						return true
@@ -185,5 +187,36 @@ func TestHardBoundIsTheGracefulTimeoutPlusTheCap(t *testing.T) {
 	bound := spec.hardBound()
 	if remaining := time.Until(bound); remaining < 9*time.Minute+59*time.Second || remaining > 10*time.Minute {
 		t.Errorf("the hard bound is %s away, want the graceful timeout plus five minutes", remaining)
+	}
+}
+
+func TestCancelEscalationChildrenMatchesExecutableAndFlag(t *testing.T) {
+	root := t.TempDir()
+	add := func(pid, exe string, args ...string) {
+		t.Helper()
+		dir := filepath.Join(root, pid)
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(exe, filepath.Join(dir, "exe")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "cmdline"), []byte(strings.Join(args, "\x00")+"\x00"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("101", "/srv/watchgoose/watchgoose (deleted)", "/srv/watchgoose/watchgoose", "-escalate-child")
+	add("102", "/srv/watchgoose/watchgoose", "/srv/watchgoose/watchgoose", "-check")
+	add("103", "/other/watchgoose", "/other/watchgoose", "-escalate-child")
+	var killed []int
+	got, err := cancelEscalationChildren(root, "/srv/watchgoose/watchgoose", func(pid int) error {
+		killed = append(killed, pid)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != 101 || len(killed) != 1 || killed[0] != 101 {
+		t.Fatalf("cancelled %v, killed %v; want only pid 101", got, killed)
 	}
 }

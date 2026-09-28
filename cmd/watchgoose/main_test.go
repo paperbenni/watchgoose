@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -15,8 +17,88 @@ import (
 	"time"
 
 	"watchgoose/internal/config"
+	"watchgoose/internal/reboot"
 	"watchgoose/internal/state"
 )
+
+func TestNoRebootBackstopReturnsToPolling(t *testing.T) {
+	d, _ := testDaemon(t)
+	if err := d.state.Record(time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	d.cfg.Reboot.GracefulTimeout = 20 * time.Millisecond
+	spawn := func(reboot.EscalationSpec, *slog.Logger) (int, error) { return 0, errors.New("fork unavailable") }
+	start := time.Now()
+	d.engageReboot(context.Background(), spawn, func(context.Context) error { return errors.New("systemd unavailable") })
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("both rungs failed but the poll loop stayed blocked for %s", elapsed)
+	}
+	start = time.Now()
+	d.engageReboot(context.Background(), spawn, func(context.Context) error { return nil })
+	if elapsed := time.Since(start); elapsed < d.cfg.Reboot.GracefulTimeout || elapsed > time.Second {
+		t.Fatalf("no child after graceful request: returned after %s, want one bounded timeout", elapsed)
+	}
+}
+
+func TestEscalationChildCancellationOnlyOnExplicitStop(t *testing.T) {
+	cases := []struct {
+		result, state string
+		want          bool
+	}{
+		{"success", "running", true},
+		{"success", "degraded", true},
+		{"success", "stopping", false},
+		{"success", "", false},
+		{"exit-code", "running", false},
+	}
+	for _, tc := range cases {
+		if got := shouldCancelEscalationChildren(tc.result, tc.state); got != tc.want {
+			t.Errorf("result=%q state=%q: cancel=%v, want %v", tc.result, tc.state, got, tc.want)
+		}
+	}
+}
+
+func TestStopAfterRebootRequestLogsNoConclusionAboutReboot(t *testing.T) {
+	d, _ := testDaemon(t)
+	if err := d.state.Record(time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var audit bytes.Buffer
+	d.log = slog.New(slog.NewTextHandler(&audit, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		d.engageReboot(ctx,
+			func(reboot.EscalationSpec, *slog.Logger) (int, error) { return 42, nil },
+			func(context.Context) error { close(started); return nil })
+		close(done)
+	}()
+	<-started
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stop did not release the daemon")
+	}
+	if strings.Contains(audit.String(), "the reboot is not happening") {
+		t.Fatalf("audit log made a false claim after SIGTERM: %s", audit.String())
+	}
+}
+
+func TestMissingReassuranceHasNoInventedElapsedDuration(t *testing.T) {
+	d, cfg := testDaemon(t)
+	d.cfg.Guard.MinUptime = 100 * 365 * 24 * time.Hour
+	if err := os.WriteFile(cfg.Server.StateFile, []byte("malformed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var audit bytes.Buffer
+	d.log = slog.New(slog.NewTextHandler(&audit, nil))
+	d.poll(context.Background())
+	if strings.Contains(audit.String(), "since_reassurance=0s") || strings.Contains(audit.String(), "reassurance deadline passed") {
+		t.Fatalf("audit log invented a measured silence duration: %s", audit.String())
+	}
+}
 
 // testDaemon is a daemon whose every path is in a temporary directory. It
 // never binds, never writes to /etc and never reboots anything: assess reads

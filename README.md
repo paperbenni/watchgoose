@@ -242,6 +242,8 @@ flags for humans.
    writes the reboot byte to `/proc/sysrq-trigger`. It re-reads the reassurance
    deadline first, so a reassurance arriving during the graceful rung stops the
    ladder at the last rung too.
+   If the child also fails to reboot the machine, the daemon resumes polling
+   after the child's bounded lifetime and retries.
 6. The machine comes back, the uptime floor resets, and the switch is armed
    again.
 
@@ -347,8 +349,8 @@ to cycle it, and there is no control panel to power one back on.
 byte `b` to `/proc/sysrq-trigger` after a graceful reboot stalls. The kernel
 reboots immediately without syncing filesystems. The code cannot choose a
 poweroff byte, and it leaves the system's SysRq mask unchanged. A manual
-service stop while the child is already waiting does not cancel it; send a
-reassurance poke before stopping an active reboot ladder
+service stop cancels a waiting escalation child; a stop during system shutdown
+preserves it as the reboot backstop
 ([ADR 0002](docs/adr/0002-escalate-to-sysrq-b.md)).
 
 Also worth knowing: the simplevm metadata timers carry a known, currently-latent

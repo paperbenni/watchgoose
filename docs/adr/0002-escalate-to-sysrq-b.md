@@ -20,8 +20,12 @@ The escalation child must survive the daemon's systemd unit stopping during
 reboot. Its own session does not escape the unit cgroup. The unit therefore uses
 `KillMode=process`: systemd stops the main daemon, while the child ignores
 SIGTERM and remains alive until it acts, sees fresh reassurance, or reaches its
-bounded lifetime. Stopping the service alone while a child is already waiting
-does not cancel that child. Send a reassurance poke before a manual stop when
-abandoning an active reboot ladder.
+bounded lifetime. `ExecStopPost` cancels waiting children after an explicit
+service stop, while preserving them when systemd is shutting down or the
+daemon failed unexpectedly. Uninstall also
+cancels children before and after stopping the service.
+
+The daemon also waits only through the child's maximum lifetime. If both rungs
+fail and the machine remains up, polling resumes and the switch retries.
 
 Kernel reference: https://docs.kernel.org/admin-guide/sysrq.html

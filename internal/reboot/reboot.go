@@ -12,6 +12,7 @@
 package reboot
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -19,6 +20,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -65,7 +69,13 @@ type EscalationSpec struct {
 
 // hardBound is the latest instant the child may act, whatever else happens.
 func (s EscalationSpec) hardBound() time.Time {
-	return time.Now().Add(s.GracefulTimeout + childHardBound)
+	return time.Now().Add(s.MaximumWait())
+}
+
+// MaximumWait bounds how long the parent should trust this child as a reboot
+// backstop. If the machine is still running afterward, it must retry.
+func (s EscalationSpec) MaximumWait() time.Duration {
+	return s.GracefulTimeout + childHardBound
 }
 
 // TriggerForcefulReboot reboots the kernel by writing the sysrq reboot command.
@@ -167,8 +177,10 @@ func SpawnEscalationChild(spec EscalationSpec, log *slog.Logger) (int, error) {
 	// No Wait: the child's entire purpose is to still be running when this
 	// process is gone. Releasing the handle keeps it from lingering as a
 	// zombie in the unlikely event that this process outlives it.
-	if err := cmd.Process.Release(); err != nil {
-		return pid, fmt.Errorf("spawn escalation child: release pid %d: %w", pid, err)
+	if err := cmd.Process.Release(); err != nil && log != nil {
+		// The child already exists. A failed local handle release must not
+		// cause the parent to believe it has no forceful rung.
+		log.Warn("escalation child started but its parent handle could not be released", "child_pid", pid, "error", err)
 	}
 	if log != nil {
 		log.Info("escalation child spawned: it takes the forceful rung if the graceful one does not take the machine down",
@@ -259,6 +271,64 @@ func unreassured(spec EscalationSpec) (bool, error) {
 
 // forcefulRungName is how the forceful rung is named in every log line.
 const forcefulRungName = "sysrq-b"
+
+// CancelEscalationChildren is used by an explicit service stop or uninstall.
+// It only signals processes running this executable with the private child
+// flag, so an unrelated process in the service cgroup is left alone.
+func CancelEscalationChildren() ([]int, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("locate own executable: %w", err)
+	}
+	return cancelEscalationChildren("/proc", exe, func(pid int) error {
+		return syscall.Kill(pid, syscall.SIGKILL)
+	})
+}
+
+func cancelEscalationChildren(procRoot, exe string, kill func(int) error) ([]int, error) {
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", procRoot, err)
+	}
+	var cancelled []int
+	var problems []error
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid == os.Getpid() {
+			continue
+		}
+		proc := filepath.Join(procRoot, entry.Name())
+		path, err := os.Readlink(filepath.Join(proc, "exe"))
+		if err != nil || strings.TrimSuffix(path, " (deleted)") != exe {
+			continue
+		}
+		argv, err := os.ReadFile(filepath.Join(proc, "cmdline"))
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				problems = append(problems, fmt.Errorf("read pid %d command line: %w", pid, err))
+			}
+			continue
+		}
+		if !hasArg(argv, "-"+EscalateFlag) {
+			continue
+		}
+		if err := kill(pid); err != nil && !errors.Is(err, syscall.ESRCH) {
+			problems = append(problems, fmt.Errorf("kill escalation child %d: %w", pid, err))
+			continue
+		}
+		cancelled = append(cancelled, pid)
+	}
+	return cancelled, errors.Join(problems...)
+}
+
+func hasArg(cmdline []byte, want string) bool {
+	for _, arg := range bytes.Split(cmdline, []byte{0}) {
+		if string(arg) == want {
+			return true
+		}
+	}
+	return false
+}
 
 // sleepUntil waits until t in slices, and reports false if bound was reached
 // instead, meaning the wait was abandoned. No slice ever runs past the bound,

@@ -100,10 +100,5 @@ func writeFileAtomic(path, contents string, mode fs.FileMode) error {
 		os.Remove(tmpName)
 		return fmt.Errorf("rename %s to %s: %w", tmpName, path, err)
 	}
-	// The mode of a file that already existed survives the rename only
-	// because the temporary file was created with it, so restate it.
-	if err := os.Chmod(path, mode); err != nil {
-		return fmt.Errorf("chmod %s: %w", path, err)
-	}
 	return nil
 }

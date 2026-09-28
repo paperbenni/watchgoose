@@ -35,6 +35,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
@@ -80,8 +81,10 @@ func main() {
 
 func run() int {
 	var (
-		configPath = flag.String("config", defaultConfigPath, "path to the configuration file")
-		check      = flag.Bool("check", false, "validate the configuration, print the resolved configuration to stdout and exit; touches neither the network, the state file nor the log")
+		configPath     = flag.String("config", defaultConfigPath, "path to the configuration file")
+		check          = flag.Bool("check", false, "validate the configuration, print the resolved configuration to stdout and exit; touches neither the network, the state file nor the log")
+		cancelChildren = flag.Bool("cancel-escalation-children", false, "internal: cancel this binary's waiting escalation children")
+		cancelOnStop   = flag.Bool("cancel-escalation-children-unless-shutdown", false, "internal: cancel escalation children on an explicit service stop")
 		// The flags below are the escalation child's private handshake with its
 		// parent, not part of the configuration surface. See internal/reboot.
 		escalate       = flag.Bool(reboot.EscalateFlag, false, "internal: become the escalation child")
@@ -96,6 +99,34 @@ func run() int {
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+	if *cancelChildren || *cancelOnStop {
+		if os.Geteuid() != 0 {
+			fmt.Fprintln(os.Stderr, "watchgoose: cancelling escalation children requires root")
+			return 1
+		}
+		if *cancelOnStop {
+			result := os.Getenv("SERVICE_RESULT")
+			if result != "success" {
+				fmt.Fprintf(os.Stderr, "watchgoose: service result %q; preserving escalation children after an unplanned stop\n", result)
+				return 0
+			}
+			probeCtx, done := context.WithTimeout(context.Background(), 2*time.Second)
+			out, _ := exec.CommandContext(probeCtx, "systemctl", "is-system-running").Output()
+			state := strings.TrimSpace(string(out))
+			done()
+			if !shouldCancelEscalationChildren(result, state) {
+				fmt.Fprintf(os.Stderr, "watchgoose: system state %q; preserving escalation children during shutdown or an unknown manager state\n", state)
+				return 0
+			}
+		}
+		cancelled, err := reboot.CancelEscalationChildren()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "watchgoose: cancel escalation children: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "watchgoose: cancelled escalation children: %v\n", cancelled)
+		return 0
+	}
 
 	// The escalation child is the same binary, re-executed, so that it can
 	// outlive this process and the systemd teardown that is about to happen.
@@ -201,6 +232,10 @@ func run() int {
 	}
 	logger.Info("watchgoose stopped", "version", version, "uptime", time.Since(d.started).Round(time.Second))
 	return 0
+}
+
+func shouldCancelEscalationChildren(serviceResult, systemState string) bool {
+	return serviceResult == "success" && systemState != "stopping" && systemState != ""
 }
 
 // checkConfig prints the resolved configuration. It deliberately touches
@@ -317,15 +352,17 @@ func (d *daemon) poll(ctx context.Context) {
 		d.lastStateProblem = a.stateProblem
 	}
 	if !a.stale {
-		d.log.Debug("reassured; the switch is disarmed",
-			"since_reassurance", a.since.Round(time.Second),
-			"deadline", d.cfg.Reassurance.Deadline)
 		return
 	}
 
-	d.log.Info("reassurance deadline passed; the machine looks unreachable",
-		"since_reassurance", a.since.Round(time.Second),
-		"deadline", d.cfg.Reassurance.Deadline)
+	if a.last.IsZero() {
+		d.log.Info("no usable reassurance timestamp; the machine looks unreachable",
+			"deadline", d.cfg.Reassurance.Deadline)
+	} else {
+		d.log.Info("reassurance deadline passed; the machine looks unreachable",
+			"since_reassurance", a.since.Round(time.Second),
+			"deadline", d.cfg.Reassurance.Deadline)
+	}
 
 	if !a.floorClear {
 		d.log.Info("uptime floor is holding the switch",
@@ -369,7 +406,15 @@ func (d *daemon) escalate(ctx context.Context) {
 		d.log.Info("asked to stop while settling; standing down without rebooting", "settle", d.cfg.Repair.Settle)
 		return
 	}
+	d.engageReboot(ctx, reboot.SpawnEscalationChild, reboot.GracefulReboot)
+}
 
+// engageReboot is isolated from repair so the failure paths can be exercised
+// without touching accounts or asking this machine to reboot.
+func (d *daemon) engageReboot(ctx context.Context,
+	spawn func(reboot.EscalationSpec, *slog.Logger) (int, error),
+	graceful func(context.Context) error,
+) {
 	// (c) The escalation child, spawned before the graceful reboot so that a
 	// wedged PID 1 cannot stop the ladder.
 	if !d.checkpoint("spawn the escalation child") {
@@ -381,7 +426,7 @@ func (d *daemon) escalate(ctx context.Context) {
 		StateFile:       d.state.Path(),
 		LogFile:         d.cfg.Log.File,
 	}
-	pid, err := reboot.SpawnEscalationChild(spec, d.log)
+	pid, err := spawn(spec, d.log)
 	if err != nil {
 		// Not fatal: the graceful rung may still take the machine down, and a
 		// switch that gives up because a fork failed is worse than one reboot
@@ -404,20 +449,34 @@ func (d *daemon) escalate(ctx context.Context) {
 		return
 	}
 	d.log.Warn("rung 1 of 2: asking systemd to reboot the machine", "rung", "systemctl reboot")
-	if err := reboot.GracefulReboot(ctx); err != nil {
-		d.log.Error("the graceful reboot could not be started", "rung", "systemctl reboot", "error", err)
+	gracefulErr := graceful(ctx)
+	if gracefulErr != nil {
+		d.log.Error("the graceful reboot could not be started", "rung", "systemctl reboot", "error", gracefulErr)
+	}
+	if pid <= 0 {
+		if gracefulErr != nil {
+			d.log.Error("neither reboot rung started; returning to the poll loop to retry")
+			return
+		}
+		d.log.Warn("no escalation child is available; waiting one graceful timeout before retrying the switch",
+			"retry_in", d.cfg.Reboot.GracefulTimeout)
+		_ = sleepOrStop(ctx, d.cfg.Reboot.GracefulTimeout)
+		return
 	}
 
-	// (e) Nothing left to decide. This process is expected to be killed by the
-	// reboot; if it is not, the escalation child takes the forceful rung. It
-	// is not released to make the decision again, because the ladder is
-	// already in motion and a second set of decisions here would only race it.
+	// (e) Wait for the child, but never forever. If it also fails, return to
+	// the poll loop so the switch can try again.
 	d.log.Warn("the reboot ladder is engaged; this process now waits to be killed by the reboot, "+
 		"and the escalation child takes the forceful rung if nothing does",
 		"escalation_child", child,
 		"forceful_rung_in", d.cfg.Reboot.GracefulTimeout)
-	<-ctx.Done()
-	d.log.Info("still here after the reboot ladder was engaged; the reboot is not happening. Stopping.",
+	if sleepOrStop(ctx, spec.MaximumWait()+time.Second) {
+		d.childPID.Store(0)
+		d.log.Error("still running after the escalation child's hard bound; returning to the poll loop to retry",
+			"escalation_child", child)
+		return
+	}
+	d.log.Info("daemon received a stop signal while the reboot ladder was engaged",
 		"escalation_child", child)
 }
 

@@ -101,14 +101,45 @@ fi
 
 # 1. Stop the service --------------------------------------------------------
 say "Stopping the service"
+# Kill a waiting forceful-reboot child before and after the stop. The second
+# pass closes the window in which a still-running daemon could spawn one.
+cancel_children_without_binary() {
+    local proc exe arg found
+    for proc in /proc/[0-9]*; do
+        exe="$(readlink "${proc}/exe" 2>/dev/null)" || continue
+        case "${exe}" in
+            "${BIN_DST}"|"${BIN_DST} (deleted)") ;;
+            *) continue ;;
+        esac
+        found=0
+        while IFS= read -r -d '' arg; do
+            if [ "${arg}" = "-escalate-child" ]; then found=1; break; fi
+        done < "${proc}/cmdline" 2>/dev/null || true
+        if [ "${found}" -eq 1 ]; then
+            kill -KILL "${proc##*/}" 2>/dev/null || [ ! -e "${proc}" ] || die "could not cancel escalation child ${proc##*/}"
+            ok "cancelled escalation child ${proc##*/}"
+        fi
+    done
+}
+if [ -x "${BIN_DST}" ]; then
+    "${BIN_DST}" -cancel-escalation-children || die "could not cancel escalation children; refusing to uninstall while a forceful reboot may still be armed"
+else
+    warn "${BIN_DST} is unavailable; scanning /proc for a waiting escalation child"
+    cancel_children_without_binary
+fi
 # Tolerate a unit that is already gone: an uninstaller that fails because the
 # thing it is uninstalling is absent is an uninstaller that cannot be re-run.
-if systemctl list-unit-files "${UNIT_NAME}" >/dev/null 2>&1; then
-    systemctl stop "${SERVICE_NAME}" 2>/dev/null || warn "could not stop ${SERVICE_NAME} (it may already be stopped)"
+if [ "$(systemctl show --property=LoadState --value "${SERVICE_NAME}" 2>/dev/null)" != "not-found" ]; then
+    systemctl stop "${SERVICE_NAME}" || die "could not stop ${SERVICE_NAME}; leaving the unit and binary in place"
     systemctl disable "${SERVICE_NAME}" 2>/dev/null || warn "could not disable ${SERVICE_NAME}"
     ok "stopped and disabled ${SERVICE_NAME}"
 else
     info "unit ${UNIT_NAME} is not installed; nothing to stop"
+fi
+if [ -x "${BIN_DST}" ]; then
+    "${BIN_DST}" -cancel-escalation-children || die "could not cancel escalation children after stopping the service"
+else
+    cancel_children_without_binary
 fi
 
 # 2. Remove the unit ---------------------------------------------------------

@@ -110,6 +110,9 @@ func (f *fakeSystem) run(name string, args ...string) (string, error) {
 	// A failing command is named by its whole command line, e.g.
 	// "usermod -U benjamin" or "chown 2001:2001".
 	if err, ok := f.fail[strings.Join(append([]string{name}, args...), " ")]; ok {
+		if name == "getent" {
+			return "", err
+		}
 		return "simulated failure: " + err.Error(), err
 	}
 
@@ -121,7 +124,7 @@ func (f *fakeSystem) run(name string, args ...string) (string, error) {
 		u, ok := f.users[args[1]]
 		if !ok {
 			// getent exits non-zero and prints nothing for an unknown user.
-			return "", fmt.Errorf("%s: no such user", args[1])
+			return "", errAccountMissing
 		}
 		switch args[0] {
 		case "passwd":
@@ -245,6 +248,19 @@ func perform(t *testing.T, cfg config.Config, f *fakeSystem) Report {
 		t.Fatalf("perform: %v", err)
 	}
 	return rep
+}
+
+func TestFailedRecoveryLookupDoesNotInventAUser(t *testing.T) {
+	f := newFakeSystem(t)
+	cfg := testConfig(t, f)
+	f.fail["getent passwd recovery"] = fmt.Errorf("NSS unavailable")
+	rep := perform(t, cfg, f)
+	if f.ran("useradd") {
+		t.Errorf("useradd ran after an inconclusive lookup: %v", f.calls)
+	}
+	if !hasWarningAbout(rep.Warnings, "could not determine whether account recovery exists") {
+		t.Errorf("NSS failure was not reported: %v", rep.Warnings)
+	}
 }
 
 func TestCreatesTheRecoveryUserOnTheRootDisk(t *testing.T) {
@@ -511,6 +527,16 @@ func TestRepairOfKeyOnlyAccountsProducesNoWarnings(t *testing.T) {
 	}
 	if !contains(rep.AccountsRepaired, "benjamin") || !contains(rep.AccountsRepaired, "ubuntu") {
 		t.Errorf("AccountsRepaired = %v, want both accounts", rep.AccountsRepaired)
+	}
+}
+
+func TestReportsAbsentVolumeEvenWithNoOrdinaryAccounts(t *testing.T) {
+	f := newFakeSystem(t)
+	cfg := testConfig(t, f)
+	f.volumeMounted = false
+	rep := perform(t, cfg, f)
+	if rep.VolumePresent {
+		t.Fatal("absent volume was reported as present because no accounts were configured")
 	}
 }
 

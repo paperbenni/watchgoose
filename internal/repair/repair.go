@@ -158,6 +158,11 @@ func (r *repairer) repairRecoveryUser() {
 
 	entry, found, warns := r.a.lookup(user)
 	r.rep.Warnings = append(r.rep.Warnings, warns...)
+	if !found && len(warns) > 0 {
+		// A failed NSS lookup is not evidence that the account is absent.
+		// Creating it now could collide with an existing recovery user.
+		return
+	}
 
 	if !found {
 		// The home directory is created first, and owned by the user once the
@@ -293,11 +298,6 @@ func (r *repairer) repairSudoers() {
 // mounted.
 func (r *repairer) repairAccounts() {
 	accounts := r.cfg.Repair.Accounts
-	if len(accounts) == 0 {
-		r.rep.VolumePresent = true
-		return
-	}
-
 	mountpoint := r.cfg.Volume.Mountpoint
 	if mountpoint == "" {
 		// No volume configured: this machine has only the one disk.
@@ -324,6 +324,9 @@ func (r *repairer) repairAccounts() {
 		default:
 			r.rep.VolumePresent = true
 		}
+	}
+	if len(accounts) == 0 {
+		return
 	}
 	r.a.log.Info("volume is mounted; repairing the ordinary accounts", "volume", mountpoint, "accounts", len(accounts))
 
