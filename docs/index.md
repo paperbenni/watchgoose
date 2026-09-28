@@ -5,6 +5,9 @@ hero:
   name: watchgoose
   text: If you don't honk, VM gets bonk
   tagline: A dead-man's switch for a Linux work VM
+  image:
+    src: /images/watchgoose.png
+    alt: Goose with a knife and the words "Peace was never an option"
   actions:
     - theme: brand
       text: Get started
