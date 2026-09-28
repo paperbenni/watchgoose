@@ -5,6 +5,10 @@
 /docs/.vitepress/dist/
 /docs/.vitepress/cache/
 
+# Local deployment values contain this VM's SSH public key and tailnet address.
+# Keep them on this machine, outside the public repository.
+/thismachine/
+
 # Stray `go build` output in the repository root. The install scripts
 # deliberately refuse to pick one of these up — a bare `go build` is dynamically
 # linked and does not run on the target machine — but it still must never reach
