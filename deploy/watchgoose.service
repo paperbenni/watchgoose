@@ -1,0 +1,109 @@
+[Unit]
+# watchgoose — the dead-man's switch daemon.
+#
+# This unit starts a process. It does not fire anything. See "no timer" below
+# before you "fix" that.
+Description=watchgoose dead-man's switch daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/srv/watchgoose/watchgoose -config /etc/watchgoose.yaml
+Restart=always
+RestartSec=5
+# A wedged stop would sit in the way of the reboot rung, so cap it. If the
+# daemon is mid-repair it has already done the part that matters, or it has not
+# started; either way, five seconds of SIGTERM then SIGKILL is the right answer.
+TimeoutStopSec=10
+# If the config is bad, the bind address is not up yet, or the binary is wrong,
+# this loop is what recovers. It also means a genuinely bad config produces a
+# restart every 5s in the journal rather than a single clean failure; that is the
+# correct trade for a machine that may be unreachable.
+#
+# Runs as root, and this is not negotiable. Repair runs useradd/usermod and
+# writes /etc/sudoers.d/; the forceful reboot rung writes /proc/sys/kernel/sysrq
+# and /proc/sysrq-trigger (ADR 0002). There is no non-root identity on this
+# machine that can do those things, and inventing one would add a way to be
+# wrong without removing a way to be attacked. The daemon carries no
+# authentication of any kind (ADR 0006), so the thing being defended against is
+# not a local attacker.
+
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# NO TIMER. NO ExecStartPre. NO .timer FILE. THIS IS DELIBERATE.
+#
+# A single process listens for reassurance, decides whether the deadline has
+# passed, and acts — by decision, recorded in docs/adr/0005-single-daemon.md.
+# There is no separate decider, no cron entry, and no systemd timer, and adding
+# one would reintroduce exactly the failure mode ADR 0005 exists to remove: two
+# schedulers that can disagree about what the switch should do, and a
+# dependency on systemd being healthy at the moment the switch has to act. A
+# wedged PID 1 must not be able to stop this machine from noticing it is
+# unreachable.
+#
+# If you are reading this because you expected a timer, that expectation is the
+# bug. The reassurance deadline is enforced in-process, at
+# server.poll_interval, and its only on-disk state is the timestamp of the last
+# reassurance.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+
+# Modest hardening, limited to what cannot break repair.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+# Explicitly FALSE, and it must stay false.
+#
+# ProtectHome=true would hide /home from the daemon. The volume holding the
+# ordinary accounts' homes is a separate disk that intermittently fails to
+# mount, and repair of those accounts is exactly the thing that has to work when
+# everything else has not (ADR 0004). A daemon that cannot see /home repairs
+# nobody, and reports having done so.
+ProtectHome=false
+
+# ── Omitted on purpose. Each of these looks like free hardening and each one
+# ── breaks a rung of the reboot ladder. Do not add them.
+#
+# ProtectKernelTunables  — makes /proc/sys read-only, which is precisely where
+#   the escalation writes the magic control bit (ADR 0002). Without the bit,
+#   /proc/sysrq-trigger is inert and the forceful reboot does not exist; the
+#   graceful rung times out and the machine stays up forever, which is the one
+#   outcome this whole project exists to prevent.
+#
+# ProtectSystem=strict   — extends the read-only mount to /etc, and the repair
+#   step writes /etc/sudoers.d/ and edits account records. Strict would also
+#   make /srv/watchgoose read-only, taking the log and the state file with it.
+#   `full` is the most that is safe here.
+#
+# ProtectKernelModules   — remounts /proc/sys/module and blocks module
+#   operations. Not on the daemon's own path today, but it is one namespace away
+#   from the sysrq path above and this unit has no business narrowing the kernel
+#   interface of a process whose entire job is to be able to power-cycle the
+#   machine.
+#
+# Also deliberately not set, for the same class of reason:
+#
+# ProtectProc=invisible / ProcSubset=pid
+#   — ProcSubset=pid strips /proc down to process directories, which removes
+#   /proc/uptime and /proc/self/mountinfo. The daemon reads the first for the
+#   uptime floor and the second to decide whether the volume is mounted
+#   (ADR 0004). Both would silently become unreadable, and the failure mode of an
+#   unreadable mountinfo is "repair the volume's contents while writing to the
+#   root disk", which is worse than not repairing at all.
+#
+# PrivateDevices=true
+#   — the daemon does not need /dev, but it needs execve of /usr/sbin/useradd
+#   and friends, and there is no value in trading one new failure mode for
+#   another on a unit that is this load-bearing.
+#
+# CapabilityBoundingSet / SystemCallFilter
+#   — left unset deliberately. The daemon runs useradd, usermod, writes
+#   sudoers.d, and writes kernel sysrq state; narrowing the capability set or
+#   the syscall filter for this workload means rediscovering the full set by
+#   trial and error on the one machine where a mistake is unrecoverable. If
+#   someone wants to narrow it, do it on a scratch machine and add the
+#   reasoning to an ADR.
+
+[Install]
+WantedBy=multi-user.target

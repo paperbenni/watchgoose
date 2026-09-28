@@ -1,7 +1,8 @@
-# deadnbi
+# watchgoose
 
-A dead-man's switch for a single shared Linux VM: the machine repairs its own access and
-reboots when it stops hearing from the outside world.
+A dead-man's switch. Two programs: `watchgoose`, which runs on a machine and acts when it
+stops hearing from outside, and `goosepoke`, which runs on something more reliable and keeps
+speaking to it. The machine repairs its own access and reboots; nobody has to notice.
 
 ## Language
 

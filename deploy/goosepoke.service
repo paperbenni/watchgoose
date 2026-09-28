@@ -1,0 +1,95 @@
+[Unit]
+# goosepoke — the client that reassures a watchgoose daemon.
+#
+# This unit runs on a DIFFERENT, more reliable machine: a laptop, a Raspberry
+# Pi, anything that is not the thing being watched. Its only job is to POST an
+# empty request to the daemon every few minutes. The arrival is the entire
+# signal; there is no payload, no signature and no shared secret
+# (docs/adr/0006-unauthenticated-heartbeat.md).
+Description=goosepoke reassurance client for watchgoose
+Wants=network-online.target
+After=network-online.target
+# Back off on repeated failures so a permanently broken config cannot spin this
+# service in a tight loop. (StartLimit* are [Unit] keys, not [Service] keys;
+# systemd silently ignores them in the wrong section.)
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+# ── PLACEHOLDERS. Replace the four values below before installing this unit. ──
+#
+#   User=  an ordinary, unprivileged, non-login account. It needs no home
+#          directory, no shell and no privileges of any kind — the client only
+#          makes an outbound TCP connection. Create it first:
+#              sudo useradd --system --no-create-home \
+#                   --shell /usr/sbin/nologin goosepoke
+#
+#   -url   the FULL endpoint, path included, exactly as the daemon is configured
+#          to serve it: server.listen plus reassurance.path from the daemon's
+#          /etc/watchgoose.yaml. The client POSTs to precisely what it is given
+#          and appends nothing, so a URL without the path is a URL that will
+#          404. A "-" body, no headers, no credentials (ADR 0006).
+#
+#   -interval  how often to poke. Must be comfortably SMALLER than the daemon's
+#          reassurance.deadline, or the machine will conclude it is unreachable
+#          between pokes. A deadline of 20m wants an interval of 5m or less.
+#
+#   -timeout   per-request timeout. Generous, because this is a low-traffic
+#          request on a usually-idle link, and a timeout that is too tight just
+#          produces reassurance gaps.
+#
+# There is also a -config flag taking a YAML file whose keys match the flags
+# (url, interval, timeout, insecure), with explicit flags winning over the file.
+# It is deliberately unused here: a unit whose behaviour depends on a second
+# file is a unit that can be half-configured, and a unit that stops poking is
+# indistinguishable, from the machine, from a machine nobody can reach.
+#
+# Editing by hand is fine for one machine. `just test-client HOST url` renders
+# these same four placeholders and installs the result over SSH.
+User=goosepoke
+ExecStart=/usr/local/bin/goosepoke -url http://WATCHGOOSE_HOST:9099/reassure -interval 5m -timeout 15s
+Restart=always
+# Slower than the daemon's 5s, and the reason is asymmetric risk. If THIS service
+# dies, the machine it watches hears nothing, concludes it is unreachable, and
+# starts rebooting roughly every half hour for a reason that has nothing to do
+# with the watched machine being broken (ADR 0001). Ten seconds is quick enough
+# that an outage here is a blip and slow enough that a crash loop does not spin.
+RestartSec=10
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Hardening: the full set, because the contrast with the daemon's unit is the
+# point. The daemon cannot have any of this — it must run useradd, write
+# /etc/sudoers.d, read /proc/uptime and /proc/self/mountinfo, and write
+# /proc/sysrq-trigger (ADR 0002). This client needs one outbound TCP connection
+# and nothing on the filesystem at all, so it can be locked down completely.
+# A future reader tempted to copy directives from watchgoose.service should read
+# the comment block in that file first.
+# ─────────────────────────────────────────────────────────────────────────────
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+# Outbound TCP to the tailnet and DNS to resolve it. Nothing inbound, no unix
+# sockets, no raw sockets.
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallArchitectures=native
+# No SystemCallFilter here. A Go runtime touches a wide and version-dependent
+# set of syscalls; a filter is very likely to break this binary in a way that
+# only shows up under load, which is the worst possible time to find out. If you
+# add one, test it against a real poke, not against `goosepoke -once`.
+
+[Install]
+WantedBy=multi-user.target

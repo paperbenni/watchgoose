@@ -1,0 +1,25 @@
+# Build output. Cross-compiled static binaries, rebuilt from source, never
+# committed: `just build` is faster than a review of a 2 MB diff.
+/dist/
+
+# Stray `go build` output in the repository root. The install scripts
+# deliberately refuse to pick one of these up — a bare `go build` is dynamically
+# linked and does not run on the target machine — but it still must never reach
+# git by accident.
+/watchgoose
+/goosepoke
+/goosepoke-linux-arm64
+
+# Editor and OS noise. Nothing here is ever deliberately checked in, and a stray
+# swap file that shadows a config is a bad afternoon.
+*.swp
+*.swo
+*~
+*.orig
+*.rej
+*.bak
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.sw?
